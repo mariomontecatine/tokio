@@ -1,0 +1,24 @@
+{
+  "_note": "Anthropic does not publish these. The 5-hour figure for max5 is measured: one real Max 5x account read 44% off /usage against $35.99 of counted spend, implying ~$82. Pro and max20 are that figure scaled by plan price, and every weekly number is still a guess. Run `tokio calibrate` to replace all of it with your own.",
+  "pro": {
+    "label": "Pro",
+    "priceUsd": 20,
+    "block": 16,
+    "week": 130,
+    "weekOpus": null
+  },
+  "max5": {
+    "label": "Max 5×",
+    "priceUsd": 100,
+    "block": 82,
+    "week": 650,
+    "weekOpus": 165
+  },
+  "max20": {
+    "label": "Max 20×",
+    "priceUsd": 200,
+    "block": 328,
+    "week": 2600,
+    "weekOpus": 650
+  }
+}
