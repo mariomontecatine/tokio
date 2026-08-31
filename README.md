@@ -73,6 +73,13 @@ Close the laptop.
 
 ## What you see
 
+<!-- Screenshot goes here. Drop dashboard.png into docs/screenshots/ and
+     uncomment the line below. See docs/screenshots/README.md.
+
+![The tokio dashboard](docs/screenshots/dashboard.png)
+
+-->
+
 ```
   Plan: Max 5×  (estimated cap — run "tokio calibrate <pct>")
 
@@ -92,6 +99,12 @@ Close the laptop.
 The dashboard draws the same thing as one chart — the window as a strip recorder, where the
 filled trace is what you've spent, the dashed line is where your current pace lands you, and the
 blocks past the reset rule are the jobs waiting to run in the next window:
+
+<!-- Screenshot goes here: docs/screenshots/strip.png
+
+![The window strip](docs/screenshots/strip.png)
+
+-->
 
 ```
  100 ┤                                              │

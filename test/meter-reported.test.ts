@@ -101,3 +101,12 @@ test('remaining credits agree with the percentage on screen', () => {
   assert.ok(Math.abs(s.block.cap.credits - 40) < 0.01);
   assert.ok(Math.abs(s.block.remainingCredits - 10) < 0.01);
 });
+
+test('a minute of wobble in the reported reset is not a new window', async () => {
+  const { isRealReset } = await import('../src/meter/index.ts');
+  const start = Date.now();
+  // Observed in practice: the reported reset moved by 60s between two readings.
+  assert.equal(isRealReset(start, start + 60_000), false);
+  assert.equal(isRealReset(start, start - 60_000), false);
+  assert.equal(isRealReset(start, start + 5 * HOUR), true, 'a real reset moves it by hours');
+});

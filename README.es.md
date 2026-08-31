@@ -73,6 +73,13 @@ Cierra el portátil.
 
 ## Lo que ves
 
+<!-- Aquí va la captura. Mete dashboard.png en docs/screenshots/ y descomenta
+     la línea de abajo. Ver docs/screenshots/README.md.
+
+![El panel de tokio](docs/screenshots/dashboard.png)
+
+-->
+
 ```
   Plan: Max 5×  (estimated cap — run "tokio calibrate <pct>")
 
@@ -92,6 +99,12 @@ Cierra el portátil.
 El panel dibuja lo mismo como un solo gráfico: la ventana como una tira de registro, donde la
 traza rellena es lo gastado, la línea punteada es dónde te deja tu ritmo actual, y los bloques
 pasada la línea del reset son los trabajos esperando a la siguiente ventana.
+
+<!-- Aquí va la captura: docs/screenshots/strip.png
+
+![La tira de la ventana](docs/screenshots/strip.png)
+
+-->
 
 ## ¿Te está saliendo a cuenta la suscripción?
 

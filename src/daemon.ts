@@ -7,7 +7,7 @@ import { Ingestor } from './ingest/index.ts';
 import { Scheduler } from './queue/scheduler.ts';
 import { createClaudeCodeProvider } from './providers/claudeCode.ts';
 import { createServer } from './server/index.ts';
-import { computeStatus } from './meter/index.ts';
+import { computeStatus, isRealReset } from './meter/index.ts';
 import { notify } from './notify/index.ts';
 import { networkInterfaces } from 'node:os';
 import { probeUsage } from './usage/probe.ts';
@@ -137,12 +137,18 @@ function accessHints(cfg: Config): string[] {
   ];
 }
 
-/** Announce a fresh window, which is the moment queued work becomes runnable. */
+/**
+ * Announce a fresh window, which is the moment queued work becomes runnable.
+ *
+ * The reported reset is a rolling figure rounded to the minute, so it wobbles
+ * by up to a minute between readings. Comparing it exactly would announce a
+ * reset several times an hour; a real one moves the window by hours.
+ */
 function watchForReset(db: ReturnType<typeof openDb>, cfg: Config, bus: EventEmitter): void {
   let lastStart = computeStatus(db, cfg).block.window.start;
   const timer = setInterval(() => {
     const status = computeStatus(db, cfg);
-    if (status.block.window.start !== lastStart) {
+    if (isRealReset(lastStart, status.block.window.start)) {
       lastStart = status.block.window.start;
       bus.emit('change');
       if (status.queued > 0) {
@@ -151,6 +157,9 @@ function watchForReset(db: ReturnType<typeof openDb>, cfg: Config, bus: EventEmi
           body: `Your 5h window rolled over. ${status.queued} queued job(s) will start now.`,
         });
       }
+    } else if (status.block.window.start < lastStart) {
+      // Minute-level wobble backwards; track it without calling it a reset.
+      lastStart = status.block.window.start;
     }
   }, 60_000);
   timer.unref();

@@ -13,6 +13,18 @@ export { creditsFor, familyOf, PRICES } from './weights.ts';
 export { computeValue } from './value.ts';
 
 const BURN_SAMPLE_MS = 30 * 60_000;
+
+/**
+ * How far the window start must move to count as a real reset.
+ *
+ * Anthropic's reported reset time is rolling and rounded to the minute, so it
+ * drifts by up to a minute between readings. A genuine reset moves it by hours.
+ */
+export const RESET_JUMP_MS = 30 * 60_000;
+
+export function isRealReset(previousStart: number, currentStart: number): boolean {
+  return currentStart - previousStart > RESET_JUMP_MS;
+}
 const TRACE_BUCKET_MS = 5 * 60_000;
 const DAY = 24 * HOUR;
 
