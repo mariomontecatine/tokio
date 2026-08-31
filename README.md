@@ -286,7 +286,8 @@ Options for `add`:
 | `weeklyAnchor` | `null` | `{ "weekday": 3, "hour": 11 }` — set it and the weekly gauge shows a real reset instead of a rolling window |
 | `concurrency` | `1` | Jobs at once |
 | `notify` | — | ntfy topic, Telegram bot, webhook, desktop |
-| `host` / `port` | `127.0.0.1:4646` | Binding to anything but loopback requires `token` |
+| `host` / `port` | `127.0.0.1:4646` | Beyond loopback, a `token` is generated if you have none |
+| `token` | `null` | Required for non-local access; sent as a header or `?token=` |
 
 ### Notifications
 

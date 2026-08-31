@@ -61,11 +61,53 @@ export interface Job {
 export interface Project { path: string; credits: number; lastUsed: number | null }
 export interface Session { sessionId: string; title: string; updatedAt: number }
 
+/**
+ * Access token for a dashboard served beyond loopback.
+ *
+ * The daemon hands it over once, in the URL it prints. Keeping it in
+ * sessionStorage means a reload or an in-page link doesn't lock you out, and
+ * stripping it from the address bar keeps it out of screenshots and history.
+ */
+function accessToken(): string | null {
+  const fromUrl = new URLSearchParams(location.search).get('token');
+  if (fromUrl) {
+    try {
+      sessionStorage.setItem('tokio.token', fromUrl);
+      history.replaceState(null, '', location.pathname);
+    } catch {
+      // Private mode can refuse storage; the in-memory copy below still works.
+    }
+    cachedToken = fromUrl;
+    return fromUrl;
+  }
+  if (cachedToken) return cachedToken;
+  try {
+    cachedToken = sessionStorage.getItem('tokio.token');
+  } catch {
+    cachedToken = null;
+  }
+  return cachedToken;
+}
+
+let cachedToken: string | null = null;
+
+/** EventSource cannot set headers, so the token rides along as a query param. */
+export function withToken(url: string): string {
+  const token = accessToken();
+  if (!token) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    ...init,
-    headers: init?.body ? { 'content-type': 'application/json', ...init?.headers } : init?.headers,
-  });
+  const token = accessToken();
+  const headers: Record<string, string> = { ...(init?.headers as Record<string, string>) };
+  if (init?.body) headers['content-type'] = 'application/json';
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  const res = await fetch(url, { ...init, headers });
+  if (res.status === 401) {
+    throw new Error('This dashboard needs the access token. Open the URL the daemon printed.');
+  }
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(detail.error ?? `request failed (${res.status})`);
@@ -119,7 +161,7 @@ export function useDashboard() {
 
   useEffect(() => {
     void refresh();
-    const source = new EventSource('/api/stream');
+    const source = new EventSource(withToken('/api/stream'));
     source.onmessage = () => {
       setLive(true);
       void refresh();

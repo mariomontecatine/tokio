@@ -44,7 +44,7 @@ export async function createServer(deps: ServerDeps) {
 
   app.get('/api/value', async () => computeValue(db, cfg));
 
-  app.post('/api/refresh', async (reply) => {
+  app.post('/api/refresh', async () => {
     if (!deps.refresh) return { ok: false, error: 'no daemon is running to refresh from' };
     const probe = await deps.refresh();
     return { ok: !probe.error, error: probe.error };

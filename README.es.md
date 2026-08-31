@@ -262,7 +262,8 @@ Opciones de `add`:
 | `weeklyAnchor` | `null` | `{ "weekday": 3, "hour": 11 }` — al ponerlo, el medidor semanal muestra un reset real en vez de una ventana rodante |
 | `concurrency` | `1` | Trabajos a la vez |
 | `notify` | — | Tema de ntfy, bot de Telegram, webhook, escritorio |
-| `host` / `port` | `127.0.0.1:4646` | Salir de loopback exige `token` |
+| `host` / `port` | `127.0.0.1:4646` | Fuera de loopback se genera un `token` si no tienes |
+| `token` | `null` | Necesario para acceso no local; va en cabecera o como `?token=` |
 
 ### Mantenerlo en marcha
 
