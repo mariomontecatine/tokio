@@ -46,9 +46,14 @@ cd tokio
 npm install && npm run build
 npm link              # deja `tokio` en el PATH
 
-tokio status          # lee tu cuota ya, sin configurar nada
-tokio start           # daemon + panel en http://127.0.0.1:4646
+tokio                 # arráncalo — o, si ya está en marcha, mira cómo va
+tokio status          # solo los números, sin necesidad de daemon
 ```
+
+El `npm link` es lo que deja `tokio` en tu PATH, así que funciona desde
+cualquier carpeta, igual que `claude`. `tokio` a secas arranca el daemon; si lo
+vuelves a ejecutar más tarde te informa del que ya hay en vez de fallar por el
+puerto ocupado.
 
 No hay nada que configurar ni cuenta que crear. `tokio` lee los transcripts que Claude Code ya
 escribe en `~/.claude/projects/`, así que tu historial entero está ahí desde la primera ejecución.
@@ -235,6 +240,7 @@ la ventana que estabas guardando. Con `--urgent` se salta la regla.
 
 | Orden | Qué hace |
 |---|---|
+| `tokio` | Arranca el daemon, o informa del que ya está corriendo |
 | `tokio status` | Cuota, ritmo de quemado, agotamiento previsto y cola |
 | `tokio refresh` | Vuelve a leer los números reales de Claude Code y los muestra |
 | `tokio value` | Lo que ha valido la suscripción, mes a mes |
