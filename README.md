@@ -314,17 +314,26 @@ Set any of them and you'll hear when a job lands:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/tokio.service <<'EOF'
+cat > ~/.config/systemd/user/tokio.service <<EOF
 [Unit]
 Description=tokio
+
 [Service]
-ExecStart=%h/.local/bin/tokio start
+# Absolute paths on purpose: a user unit gets none of your shell's PATH, so a
+# version-managed node (nvm, fnm, volta) is invisible to it.
+ExecStart=$(command -v node) $(pwd)/dist/cli.js start
+WorkingDirectory=$(pwd)
 Restart=on-failure
+
 [Install]
 WantedBy=default.target
 EOF
 systemctl --user enable --now tokio
+systemctl --user status tokio --no-pager
 ```
+
+Run that from the repo, so `$(pwd)` resolves. To have it survive logout,
+`loginctl enable-linger $USER`.
 
 ## FAQ
 

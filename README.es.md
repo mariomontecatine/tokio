@@ -282,17 +282,27 @@ Opciones de `add`:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/tokio.service <<'EOF'
+cat > ~/.config/systemd/user/tokio.service <<EOF
 [Unit]
 Description=tokio
+
 [Service]
-ExecStart=%h/.local/bin/tokio start
+# Rutas absolutas a propósito: una unidad de usuario no hereda el PATH de tu
+# shell, así que un node gestionado por versión (nvm, fnm, volta) no existe
+# para ella.
+ExecStart=$(command -v node) $(pwd)/dist/cli.js start
+WorkingDirectory=$(pwd)
 Restart=on-failure
+
 [Install]
 WantedBy=default.target
 EOF
 systemctl --user enable --now tokio
+systemctl --user status tokio --no-pager
 ```
+
+Ejecútalo desde el repo, para que `$(pwd)` resuelva. Para que sobreviva al
+cierre de sesión, `loginctl enable-linger $USER`.
 
 ## Preguntas
 
