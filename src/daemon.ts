@@ -9,8 +9,8 @@ import { createClaudeCodeProvider } from './providers/claudeCode.ts';
 import { createServer } from './server/index.ts';
 import { computeStatus, isRealReset } from './meter/index.ts';
 import { notify } from './notify/index.ts';
-import { networkInterfaces } from 'node:os';
 import { probeUsage } from './usage/probe.ts';
+import { dashboardUrl, isLoopback } from './net.ts';
 import { saveProbe, pruneProbes } from './usage/store.ts';
 
 export interface DaemonOptions {
@@ -93,25 +93,6 @@ export async function startDaemon(options: DaemonOptions = {}) {
   process.on('SIGTERM', shutdown);
 
   return { app, db, cfg, ingestor, scheduler, url };
-}
-
-function isLoopback(host: string): boolean {
-  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
-}
-
-function dashboardUrl(cfg: Config): string {
-  const host = cfg.host === '0.0.0.0' ? lanAddress() ?? '127.0.0.1' : cfg.host;
-  const query = cfg.token && !isLoopback(host) ? `/?token=${cfg.token}` : '';
-  return `http://${host}:${cfg.port}${query}`;
-}
-
-/** This machine's first non-loopback IPv4, for the URL another host would use. */
-function lanAddress(): string | null {
-  const nets = Object.values(networkInterfaces()).flat();
-  for (const net of nets) {
-    if (net && net.family === 'IPv4' && !net.internal) return net.address;
-  }
-  return null;
 }
 
 function onWsl(): boolean {

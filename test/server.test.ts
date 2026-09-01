@@ -74,3 +74,27 @@ test('a queued job comes back with an estimate attached', async () => {
   assert.ok(job.estimateBasis);
   await app.close();
 });
+
+test('the daemon check says no when nothing is listening', async () => {
+  const { daemonRunning, apiBase, dashboardUrl } = await import('../src/net.ts');
+  const cfg: Config = { ...loadConfig(), host: '127.0.0.1', port: 45999, token: null };
+  // Port 45999 has nothing on it; this must fail fast rather than hang.
+  const started = Date.now();
+  assert.equal(await daemonRunning(cfg, 800), false);
+  assert.ok(Date.now() - started < 3000, 'the check has to be quick — it runs before every bare `tokio`');
+  assert.equal(apiBase(cfg), 'http://127.0.0.1:45999');
+  assert.equal(dashboardUrl(cfg), 'http://127.0.0.1:45999');
+});
+
+test('a loopback dashboard URL carries no token, a remote one does', async () => {
+  const { dashboardUrl } = await import('../src/net.ts');
+  const base = loadConfig();
+  assert.equal(
+    dashboardUrl({ ...base, host: '127.0.0.1', port: 4646, token: 'secret' }),
+    'http://127.0.0.1:4646',
+    'no point pasting a token into a URL only this machine can open',
+  );
+  const remote = dashboardUrl({ ...base, host: '0.0.0.0', port: 4646, token: 'secret' });
+  assert.match(remote, /\?token=secret$/);
+  assert.doesNotMatch(remote, /0\.0\.0\.0/, 'nobody can open 0.0.0.0 — show a real address');
+});

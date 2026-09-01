@@ -14,8 +14,8 @@ export interface ValueReport {
   equivalentUsd: number;
   /** Subscription fees over the same period, or null when the price is unknown. */
   paidUsd: number | null;
-  /** Whole billing periods counted. */
-  months: number;
+  /** Days of history the comparison covers. */
+  elapsedDays: number;
   /** equivalentUsd / paidUsd. Null when we can't price the plan. */
   multiple: number | null;
   thisWeekUsd: number;
@@ -46,10 +46,16 @@ export function computeValue(db: Db, cfg: Config, now = Date.now()): ValueReport
   const equivalentUsd = sum(db, since, now);
 
   const price = cfg.planPriceUsd ?? PROFILES[cfg.plan]?.priceUsd ?? null;
-  // Subscriptions bill whole months, so a partial one still counts as paid.
-  const elapsedMonths = (now - since) / (30.437 * 24 * 3_600_000);
-  const months = Math.max(1, Math.ceil(elapsedMonths));
-  const paidUsd = price === null ? null : price * months;
+
+  // Pro-rate rather than counting whole billing periods. Rounding up made the
+  // figure halve the moment a month ticked over — two months billed against one
+  // month of usage — which said nothing about the day before.
+  const elapsedDays = Math.max(1, (now - since) / (24 * 3_600_000));
+  const paidUsd = price === null ? null : price * (elapsedDays / 30.437);
+
+  // Under a few days the denominator is too small to divide by honestly: a
+  // fresh install would boast a spectacular multiple off an afternoon's work.
+  const enoughHistory = elapsedDays >= 3;
 
   const byMonth = (
     db
@@ -65,8 +71,8 @@ export function computeValue(db: Db, cfg: Config, now = Date.now()): ValueReport
     sinceIsFirstTranscript,
     equivalentUsd,
     paidUsd,
-    months,
-    multiple: paidUsd && paidUsd > 0 ? equivalentUsd / paidUsd : null,
+    elapsedDays,
+    multiple: enoughHistory && paidUsd && paidUsd > 0 ? equivalentUsd / paidUsd : null,
     thisWeekUsd: sum(db, now - 7 * 24 * 3_600_000, now),
     thisBlockUsd: sum(db, now - 5 * 3_600_000, now),
     byMonth,

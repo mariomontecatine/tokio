@@ -13,11 +13,13 @@ import { addAnchor, planLabel } from './plans/calibrate.ts';
 import { createJob, deleteJob, getJob, listJobs, updateJob } from './queue/store.ts';
 import { recentSessions } from './server/projects.ts';
 import { effectiveModel } from './models.ts';
+import { daemonRunning, dashboardUrl } from './net.ts';
 import type { RunPolicy, Safety } from './types.ts';
 
 const HELP = `tokio — queue prompts for your coding agent and watch your subscription quota
 
 Usage
+  tokio                                      Start it, or show what's running
   tokio start [--port <n>] [--host <addr>]   Run the daemon and dashboard
   tokio status [--refresh]                   Show quota, burn rate and queue
   tokio refresh                              Re-read the real numbers and show them
@@ -214,8 +216,12 @@ function cmdValue(): void {
   console.log(`\n  Since ${from}${v.sinceIsFirstTranscript ? ' (your oldest transcript)' : ''}\n`);
   console.log(`  Run on the API this would have cost   ${money(v.equivalentUsd).padStart(10)}`);
   if (v.paidUsd !== null) {
-    console.log(`  Subscription over the same period     ${money(v.paidUsd).padStart(10)}  (${v.months} month${v.months === 1 ? '' : 's'})`);
-    console.log(`  So the plan is paying back            ${(v.multiple!.toFixed(1) + '×').padStart(10)}`);
+    console.log(`  Subscription over the same period     ${money(v.paidUsd).padStart(10)}  (${Math.round(v.elapsedDays)} days at ${money(v.paidUsd / (v.elapsedDays / 30.437))}/month)`);
+    if (v.multiple !== null) {
+      console.log(`  So the plan is paying back            ${(v.multiple.toFixed(1) + '×').padStart(10)}`);
+    } else {
+      console.log('  Too little history yet to divide one by the other.');
+    }
   }
   console.log(`\n  Last 7 days   ${money(v.thisWeekUsd)}`);
   console.log(`  Last 5 hours  ${money(v.thisBlockUsd)}`);
@@ -243,14 +249,34 @@ function cmdSessions(cwd: string): void {
   console.log('');
 }
 
+/**
+ * What plain `tokio` does.
+ *
+ * Typing the name of a tool should get you the tool, not a page of syntax. If
+ * nothing is running, run it; if something already is, say where it is and how
+ * things stand rather than failing on a busy port.
+ */
+async function cmdDefault(): Promise<void> {
+  const cfg = loadConfig();
+  if (await daemonRunning(cfg)) {
+    console.log(`\n  Already running — ${dashboardUrl(cfg)}`);
+    await cmdStatus(false);
+    console.log('  Run "tokio help" for everything else.\n');
+    return;
+  }
+  const { startDaemon } = await import('./daemon.ts');
+  await startDaemon({});
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const command = argv[0];
 
-  if (!command || command === 'help' || command === '--help' || command === '-h') {
+  if (command === 'help' || command === '--help' || command === '-h') {
     console.log(HELP);
     return;
   }
+  if (!command) return cmdDefault();
 
   const { values, positionals } = parseArgs({
     args: argv.slice(1),

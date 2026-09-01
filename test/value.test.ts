@@ -22,22 +22,37 @@ test('it totals what the same work would have cost on the API', () => {
   seed(db, [{ daysAgo: 10, credits: 200 }, { daysAgo: 2, credits: 300 }]);
   const v = computeValue(db, cfg());
   assert.equal(v.equivalentUsd, 500);
-  assert.equal(v.paidUsd, 100, 'one month of Max 5×');
-  assert.equal(v.multiple, 5);
+  assert.ok(Math.abs(v.paidUsd! - 100 * (10 / 30.437)) < 1, 'ten days of a $100 plan');
+  assert.ok(v.multiple! > 10);
 });
 
-test('a partial month still counts as a month billed', () => {
+test('the fee is pro-rated, so a month boundary does not halve the answer', () => {
   const db = openDb(':memory:');
-  seed(db, [{ daysAgo: 3, credits: 50 }]);
-  assert.equal(computeValue(db, cfg()).months, 1);
+  seed(db, [{ daysAgo: 30, credits: 1000 }, { daysAgo: 1, credits: 0.01 }]);
+  const justUnder = computeValue(db, cfg());
+
+  const db2 = openDb(':memory:');
+  seed(db2, [{ daysAgo: 32, credits: 1000 }, { daysAgo: 1, credits: 0.01 }]);
+  const justOver = computeValue(db2, cfg());
+
+  // Rounding up to whole months used to drop this from ~10x to ~5x overnight.
+  assert.ok(Math.abs(justUnder.multiple! - justOver.multiple!) < 1);
 });
 
-test('longer histories bill every month they span', () => {
+test('longer histories are charged for the days they cover', () => {
   const db = openDb(':memory:');
   seed(db, [{ daysAgo: 100, credits: 100 }, { daysAgo: 1, credits: 100 }]);
   const v = computeValue(db, cfg());
-  assert.equal(v.months, 4, '100 days is four billing periods');
-  assert.equal(v.paidUsd, 400);
+  assert.ok(Math.abs(v.elapsedDays - 100) < 1);
+  assert.ok(Math.abs(v.paidUsd! - 100 * (100 / 30.437)) < 1);
+});
+
+test('a couple of hours of history is not enough to claim a multiple', () => {
+  const db = openDb(':memory:');
+  seed(db, [{ daysAgo: 0.05, credits: 40 }]);
+  const v = computeValue(db, cfg());
+  assert.equal(v.multiple, null, 'dividing by an afternoon would flatter the plan');
+  assert.equal(v.equivalentUsd, 40, 'the usage total is still worth showing');
 });
 
 test('without a start date it says the period came from the transcripts', () => {
@@ -59,22 +74,24 @@ test('a configured start date is used instead, and older usage drops out', () =>
 
 test('a custom plan price overrides the shipped one', () => {
   const db = openDb(':memory:');
-  seed(db, [{ daysAgo: 2, credits: 60 }]);
-  assert.equal(computeValue(db, cfg({ planPriceUsd: 30 })).multiple, 2);
+  seed(db, [{ daysAgo: 30, credits: 60 }]);
+  const standard = computeValue(db, cfg()).multiple!;
+  const cheaper = computeValue(db, cfg({ planPriceUsd: 30 })).multiple!;
+  assert.ok(Math.abs(cheaper / standard - 100 / 30) < 0.1);
 });
 
 test('an unpriced plan reports usage without inventing a multiple', () => {
   const db = openDb(':memory:');
-  seed(db, [{ daysAgo: 2, credits: 60 }]);
+  seed(db, [{ daysAgo: 20, credits: 60 }]);
   const v = computeValue(db, cfg({ plan: 'custom' }));
   assert.equal(v.equivalentUsd, 60);
   assert.equal(v.paidUsd, null);
   assert.equal(v.multiple, null);
 });
 
-test('an empty history is reported as zero, not as a division by zero', () => {
+test('an empty history reports nothing rather than a zero payback', () => {
   const v = computeValue(openDb(':memory:'), cfg());
   assert.equal(v.equivalentUsd, 0);
-  assert.equal(v.multiple, 0);
+  assert.equal(v.multiple, null, 'no history is unknown, not "the plan returned nothing"');
   assert.deepEqual(v.byMonth, []);
 });

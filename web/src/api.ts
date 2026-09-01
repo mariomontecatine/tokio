@@ -23,7 +23,7 @@ export interface ValueReport {
   sinceIsFirstTranscript: boolean;
   equivalentUsd: number;
   paidUsd: number | null;
-  months: number;
+  elapsedDays: number;
   multiple: number | null;
   thisWeekUsd: number;
   thisBlockUsd: number;
