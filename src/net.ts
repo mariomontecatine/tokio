@@ -1,4 +1,6 @@
-import { networkInterfaces } from 'node:os';
+import { networkInterfaces, platform } from 'node:os';
+import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import type { Config } from './config.ts';
 
 export function isLoopback(host: string): boolean {
@@ -42,4 +44,75 @@ export async function daemonRunning(cfg: Config, timeoutMs = 1500): Promise<bool
   } catch {
     return false;
   }
+}
+
+export function onWsl(): boolean {
+  if (process.env.WSL_DISTRO_NAME) return true;
+  try {
+    return /microsoft/i.test(readFileSync('/proc/version', 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The commands that might open a URL here, best first.
+ *
+ * WSL is the case that needs its own list: the browser lives on the Windows
+ * side, so `xdg-open` is usually absent and, when it is present, opens nothing
+ * anyone can see. `wslview` is the right tool when it's installed, and
+ * `explorer.exe` is always there.
+ */
+function openers(): { cmd: string; args: (url: string) => string[] }[] {
+  if (onWsl()) {
+    return [
+      { cmd: 'wslview', args: (url) => [url] },
+      { cmd: 'explorer.exe', args: (url) => [url] },
+      { cmd: 'xdg-open', args: (url) => [url] },
+    ];
+  }
+  switch (platform()) {
+    case 'darwin':
+      return [{ cmd: 'open', args: (url) => [url] }];
+    case 'win32':
+      return [{ cmd: 'cmd', args: (url) => ['/c', 'start', '', url] }];
+    default:
+      return [
+        { cmd: 'xdg-open', args: (url) => [url] },
+        { cmd: 'gio', args: (url) => ['open', url] },
+        { cmd: 'sensible-browser', args: (url) => [url] },
+      ];
+  }
+}
+
+/**
+ * Open the dashboard in whatever browser this machine uses.
+ *
+ * Never throws and never blocks: a machine with no browser (a server, a bare
+ * container) is a normal thing to run the daemon on, and failing to open a
+ * window there must not look like the daemon failed. Resolves to false so the
+ * caller can fall back to printing the URL.
+ */
+export function openInBrowser(url: string): Promise<boolean> {
+  const candidates = openers();
+
+  const attempt = (index: number): Promise<boolean> => {
+    const opener = candidates[index];
+    if (!opener) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      try {
+        const child = spawn(opener.cmd, opener.args(url), { stdio: 'ignore', detached: true });
+        // A missing binary arrives as an async 'error' event, not a throw.
+        child.on('error', () => resolve(attempt(index + 1)));
+        child.on('spawn', () => {
+          child.unref();
+          resolve(true);
+        });
+      } catch {
+        resolve(attempt(index + 1));
+      }
+    });
+  };
+
+  return attempt(0);
 }

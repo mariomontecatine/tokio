@@ -2,4 +2,15 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# Nothing here belongs in the repo: tokio keeps its config in
+# ~/.config/tokio and its database in ~/.local/share/tokio. These patterns are
+# a backstop against a stray copy carrying an access token or your usage.
 .env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+*.pem
+*.key
+.claude/settings.local.json

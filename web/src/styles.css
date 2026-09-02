@@ -80,6 +80,11 @@ button, input, textarea, select { font: inherit; color: inherit; }
 }
 .masthead .spacer { flex: 1; }
 
+/*
+ * Only ever shown when the event stream has dropped. A badge that reads "live"
+ * whenever things are fine is decoration; a badge that appears when the figures
+ * have stopped updating is information.
+ */
 .live {
   display: inline-flex;
   align-items: center;
@@ -94,14 +99,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--spent);
-  box-shadow: 0 0 0 0 rgba(79, 209, 197, 0.6);
-  animation: pulse 2.4s ease-out infinite;
-}
-.live.stale i { background: var(--dim); animation: none; box-shadow: none; }
-@keyframes pulse {
-  70% { box-shadow: 0 0 0 7px rgba(79, 209, 197, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(79, 209, 197, 0); }
+  background: var(--dim);
 }
 
 /* ---------- section furniture ---------- */

@@ -22,6 +22,47 @@ export interface ValueReport {
   thisBlockUsd: number;
   /** Newest first, for the chart. */
   byMonth: { month: string; usd: number }[];
+  /** How our arithmetic compares with Claude Code's own, where both exist. */
+  reconciliation: Reconciliation | null;
+}
+
+export interface Reconciliation {
+  /** Sessions where Claude Code left its own total in the transcript. */
+  sessions: number;
+  /** Claude Code's figure for those sessions. */
+  reportedUsd: number;
+  /** Ours for the same sessions. */
+  ourUsd: number;
+  /** ourUsd / reportedUsd. Below 1 means we are counting a floor. */
+  ratio: number;
+}
+
+/**
+ * Check our sums against Claude Code's own.
+ *
+ * Claude Code occasionally writes a `cost-state` line into a transcript with
+ * the total it computed for that session. Where it did, we can compare like
+ * with like — and the honest expectation is that we come in slightly under,
+ * because a few calls (the Haiku that titles a session, compaction, retries)
+ * never appear in the transcript as assistant messages for us to count.
+ *
+ * Null when no session has both figures, which is the common case: this is a
+ * cross-check when one is available, never a number we invent.
+ */
+function reconcile(db: Db): Reconciliation | null {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS sessions,
+              COALESCE(SUM(c.usd), 0) AS reportedUsd,
+              COALESCE(SUM(e.credits), 0) AS ourUsd
+       FROM session_costs c
+       JOIN (SELECT sessionId, SUM(credits) AS credits FROM events GROUP BY sessionId) e
+         ON e.sessionId = c.sessionId`,
+    )
+    .get() as { sessions: number; reportedUsd: number; ourUsd: number };
+
+  if (!row.sessions || row.reportedUsd <= 0) return null;
+  return { ...row, ratio: row.ourUsd / row.reportedUsd };
 }
 
 function sum(db: Db, since: number, until = Date.now()): number {
@@ -76,5 +117,6 @@ export function computeValue(db: Db, cfg: Config, now = Date.now()): ValueReport
     thisWeekUsd: sum(db, now - 7 * 24 * 3_600_000, now),
     thisBlockUsd: sum(db, now - 5 * 3_600_000, now),
     byMonth,
+    reconciliation: reconcile(db),
   };
 }

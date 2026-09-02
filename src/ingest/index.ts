@@ -11,8 +11,9 @@ import type { UsageEvent } from '../types.ts';
 
 const INSERT = `INSERT OR IGNORE INTO events
   (messageId, requestId, ts, model, family, inputTokens, outputTokens,
-   cacheWrite5m, cacheWrite1h, cacheRead, credits, sessionId, project, turnId, source)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
+   cacheWrite5m, cacheWrite1h, cacheRead, webSearches, speed, inferenceGeo,
+   credits, sessionId, project, turnId, source)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
 
 /**
  * Watches Claude Code's transcripts and mirrors billable usage into SQLite.
@@ -48,6 +49,11 @@ export class Ingestor extends EventEmitter {
       );
       const insert = this.db.prepare(INSERT);
       const saveTurn = this.db.prepare('INSERT OR IGNORE INTO turns (turnId, ts, project, chars) VALUES (?,?,?,?)');
+      // Cost-state lines are cumulative snapshots, so the largest one wins.
+      const saveSessionCost = this.db.prepare(
+        `INSERT INTO session_costs (sessionId, usd, seenAt) VALUES (?,?,?)
+         ON CONFLICT(sessionId) DO UPDATE SET usd = MAX(usd, excluded.usd), seenAt = excluded.seenAt`,
+      );
       let inserted = 0;
 
       for (const file of files) {
@@ -69,6 +75,10 @@ export class Ingestor extends EventEmitter {
             turnRows.push({ turnId, ts: parsed.ts, project: fallback, chars: parsed.chars });
             continue;
           }
+          if (parsed.kind === 'session-cost') {
+            saveSessionCost.run(parsed.sessionId, parsed.usd, Date.now());
+            continue;
+          }
           events.push({ ...parsed.event, turnId });
         }
         this.turns.set(file, turnId);
@@ -79,7 +89,8 @@ export class Ingestor extends EventEmitter {
             for (const e of events) {
               const res = insert.run(
                 e.messageId, e.requestId, e.ts, e.model, e.family, e.inputTokens, e.outputTokens,
-                e.cacheWrite5m, e.cacheWrite1h, e.cacheRead, e.credits, e.sessionId, e.project, e.turnId, e.source,
+                e.cacheWrite5m, e.cacheWrite1h, e.cacheRead, e.webSearches, e.speed, e.inferenceGeo,
+                e.credits, e.sessionId, e.project, e.turnId, e.source,
               );
               inserted += Number(res.changes);
             }

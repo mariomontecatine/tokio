@@ -1,22 +1,25 @@
 import type { ModelFamily } from '../types.ts';
+import {
+  FAMILY_FALLBACK,
+  MODEL_TIER,
+  TIERS,
+  US_INFERENCE_SURCHARGE,
+  fastModeRates,
+  normalizeModelId,
+  type Rates,
+} from './catalog.ts';
+
+export type { Rates } from './catalog.ts';
+export { TIERS, normalizeModelId, US_INFERENCE_SURCHARGE } from './catalog.ts';
 
 /**
- * USD per million tokens, by model family. Subscription plans don't bill in
- * dollars, but their limits scale with the cost of what you run, so pricing is
- * the only sane common unit: one "credit" here is one USD-equivalent of API
- * usage. That makes an Opus turn count roughly five times a Sonnet one, which
- * is what actually drains a plan.
+ * One "credit" is one USD-equivalent of API usage at list price.
+ *
+ * Subscription plans don't bill in dollars, but their limits scale with the
+ * cost of what you run, so pricing is the only sane common unit: it makes an
+ * Opus turn count five times a Sonnet one, which is what actually drains a
+ * plan. The rates themselves live in catalog.ts and mirror Claude Code's.
  */
-export const PRICES: Record<ModelFamily, {
-  input: number; output: number; cacheWrite5m: number; cacheWrite1h: number; cacheRead: number;
-}> = {
-  opus:    { input: 15, output: 75, cacheWrite5m: 18.75, cacheWrite1h: 30, cacheRead: 1.5 },
-  sonnet:  { input: 3,  output: 15, cacheWrite5m: 3.75,  cacheWrite1h: 6,  cacheRead: 0.3 },
-  haiku:   { input: 1,  output: 5,  cacheWrite5m: 1.25,  cacheWrite1h: 2,  cacheRead: 0.1 },
-  // Unknown models are priced as Sonnet: the mid tier keeps the error bounded
-  // in both directions rather than wildly over- or under-counting.
-  unknown: { input: 3,  output: 15, cacheWrite5m: 3.75,  cacheWrite1h: 6,  cacheRead: 0.3 },
-};
 
 export function familyOf(model: string | undefined | null): ModelFamily {
   if (!model) return 'unknown';
@@ -27,21 +30,74 @@ export function familyOf(model: string | undefined | null): ModelFamily {
   return 'unknown';
 }
 
+/** How a set of rates was arrived at, so callers can tell a match from a guess. */
+export type RateBasis = 'model' | 'fast-mode' | 'family';
+
+export interface ResolvedRates {
+  rates: Rates;
+  basis: RateBasis;
+}
+
+/**
+ * The list rates for a model.
+ *
+ * `model` may be a full id from a transcript, a provider-flavoured id, or a
+ * bare family name ("opus"), which resolves to that family's newest tier.
+ */
+export function resolveRates(model: string | undefined | null, speed?: string | null): ResolvedRates {
+  const id = normalizeModelId(model ?? '');
+
+  if (speed === 'fast') {
+    const fast = fastModeRates(id);
+    if (fast) return { rates: fast, basis: 'fast-mode' };
+  }
+
+  const tier = MODEL_TIER[id];
+  if (tier) return { rates: TIERS[tier], basis: 'model' };
+
+  return { rates: TIERS[FAMILY_FALLBACK[familyOf(model)]], basis: 'family' };
+}
+
+export function ratesFor(model: string | undefined | null, speed?: string | null): Rates {
+  return resolveRates(model, speed).rates;
+}
+
 export interface TokenCounts {
   inputTokens: number;
   outputTokens: number;
   cacheWrite5m: number;
   cacheWrite1h: number;
   cacheRead: number;
+  /** Server-side web searches, billed per request rather than per token. */
+  webSearches?: number;
 }
 
-export function creditsFor(t: TokenCounts, family: ModelFamily): number {
-  const p = PRICES[family];
-  return (
-    t.inputTokens * p.input +
-    t.outputTokens * p.output +
-    t.cacheWrite5m * p.cacheWrite5m +
-    t.cacheWrite1h * p.cacheWrite1h +
-    t.cacheRead * p.cacheRead
-  ) / 1_000_000;
+export interface BillingContext {
+  /** `standard` or `fast`, from the transcript's `usage.speed`. */
+  speed?: string | null;
+  /** `usage.inference_geo`; "us" carries a surcharge. */
+  inferenceGeo?: string | null;
+}
+
+/**
+ * What one assistant response would have cost on the API.
+ *
+ * Mirrors Claude Code's own arithmetic, including the two parts that are easy
+ * to miss: the US inference surcharge multiplies the token cost but not the
+ * per-request web-search charge, and cache writes are split across their 5m and
+ * 1h tiers, which are priced differently.
+ */
+export function creditsFor(t: TokenCounts, model: string | ModelFamily, billing: BillingContext = {}): number {
+  const p = ratesFor(model, billing.speed);
+
+  const tokens =
+    (t.inputTokens * p.input +
+      t.outputTokens * p.output +
+      t.cacheWrite5m * p.cacheWrite5m +
+      t.cacheWrite1h * p.cacheWrite1h +
+      t.cacheRead * p.cacheRead) /
+    1_000_000;
+
+  const multiplier = billing.inferenceGeo === 'us' ? US_INFERENCE_SURCHARGE : 1;
+  return tokens * multiplier + (t.webSearches ?? 0) * p.webSearch;
 }

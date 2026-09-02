@@ -1,6 +1,5 @@
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { openDb } from './db.ts';
 import { loadConfig, saveConfig, type Config } from './config.ts';
 import { Ingestor } from './ingest/index.ts';
@@ -10,7 +9,7 @@ import { createServer } from './server/index.ts';
 import { computeStatus, isRealReset } from './meter/index.ts';
 import { notify } from './notify/index.ts';
 import { probeUsage } from './usage/probe.ts';
-import { dashboardUrl, isLoopback } from './net.ts';
+import { dashboardUrl, isLoopback, onWsl } from './net.ts';
 import { saveProbe, pruneProbes } from './usage/store.ts';
 
 export interface DaemonOptions {
@@ -93,15 +92,6 @@ export async function startDaemon(options: DaemonOptions = {}) {
   process.on('SIGTERM', shutdown);
 
   return { app, db, cfg, ingestor, scheduler, url };
-}
-
-function onWsl(): boolean {
-  if (process.env.WSL_DISTRO_NAME) return true;
-  try {
-    return /microsoft/i.test(readFileSync('/proc/version', 'utf8'));
-  } catch {
-    return false;
-  }
 }
 
 /**

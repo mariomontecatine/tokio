@@ -1,10 +1,13 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import type { PlanId, Safety } from './types.ts';
 
 export interface NotifyConfig {
-  /** ntfy.sh topic name, e.g. "tokio-mario-7f3a". */
+  /**
+   * ntfy.sh topic, e.g. "tokio-4f9c2a1b". Anyone who knows a topic name can
+   * read it, so pick an unguessable one — it is a shared secret, not a label.
+   */
   ntfyTopic: string | null;
   ntfyServer: string;
   telegramToken: string | null;
@@ -101,9 +104,41 @@ export function loadConfig(): Config {
   }
 }
 
+/**
+ * The config can hold an access token, a Telegram bot token and a webhook URL,
+ * so it is written owner-only. `mode` on writeFileSync applies to a file it
+ * creates; chmod covers the file that already existed with looser permissions.
+ */
 export function saveConfig(cfg: Config): void {
-  mkdirSync(configDir(), { recursive: true });
-  writeFileSync(configPath(), JSON.stringify(cfg, null, 2) + '\n');
+  mkdirSync(configDir(), { recursive: true, mode: 0o700 });
+  const path = configPath();
+  writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // Filesystems without POSIX permissions (a Windows mount) will refuse.
+  }
+}
+
+/** Config keys that are credentials rather than settings. */
+const SECRETS = ['token'] as const;
+const NOTIFY_SECRETS = ['telegramToken', 'ntfyTopic', 'webhook'] as const;
+
+/**
+ * A copy safe to print or serve.
+ *
+ * `tokio config` output ends up in bug reports and screen shares, and
+ * `/api/config` is read by a dashboard that may be open on a LAN. Neither has
+ * any use for the secrets themselves — only for whether one is set — and a
+ * webhook URL or an ntfy topic is a credential in its own right: knowing it is
+ * all it takes to read or forge notifications.
+ */
+export function redactConfig(cfg: Config): Config {
+  const mask = <T,>(value: T) => (value ? ('\u2022'.repeat(8) as unknown as T) : value);
+  const out: Config = { ...cfg, notify: { ...cfg.notify } };
+  for (const key of SECRETS) out[key] = mask(out[key]);
+  for (const key of NOTIFY_SECRETS) out.notify[key] = mask(out.notify[key]);
+  return out;
 }
 
 export { DEFAULTS as defaultConfig };

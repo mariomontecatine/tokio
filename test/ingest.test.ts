@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { parseEntry } from '../src/ingest/parse.ts';
 import { tailFile } from '../src/ingest/tail.ts';
 import { projectPathOf, unslugProject } from '../src/ingest/discover.ts';
-import { creditsFor, familyOf } from '../src/meter/weights.ts';
+import { creditsFor, familyOf, resolveRates } from '../src/meter/weights.ts';
 
 const FIXTURE = join(import.meta.dirname, 'fixtures', 'transcript.jsonl');
 const lines = readFileSync(FIXTURE, 'utf8').split('\n').filter(Boolean);
@@ -23,13 +23,55 @@ test('tool results do not start a new turn', () => {
   assert.deepEqual(turns.map((t: any) => t.promptId), ['p-1', 'p-2']);
 });
 
+const MTOK = { inputTokens: 0, outputTokens: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0 };
+
 test('cache tiers are priced apart', () => {
-  const oneHour = creditsFor({ inputTokens: 0, outputTokens: 0, cacheWrite5m: 0, cacheWrite1h: 1_000_000, cacheRead: 0 }, 'opus');
-  const fiveMin = creditsFor({ inputTokens: 0, outputTokens: 0, cacheWrite5m: 1_000_000, cacheWrite1h: 0, cacheRead: 0 }, 'opus');
-  const read = creditsFor({ inputTokens: 0, outputTokens: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 1_000_000 }, 'opus');
-  assert.equal(oneHour, 30);
-  assert.equal(fiveMin, 18.75);
-  assert.equal(read, 1.5);
+  const oneHour = creditsFor({ ...MTOK, cacheWrite1h: 1_000_000 }, 'claude-opus-5');
+  const fiveMin = creditsFor({ ...MTOK, cacheWrite5m: 1_000_000 }, 'claude-opus-5');
+  const read = creditsFor({ ...MTOK, cacheRead: 1_000_000 }, 'claude-opus-5');
+  assert.equal(oneHour, 10);
+  assert.equal(fiveMin, 6.25);
+  assert.equal(read, 0.5);
+});
+
+test('models inside one family are priced apart', () => {
+  const input = { ...MTOK, inputTokens: 1_000_000 };
+  // Opus 4.1 really is three times the price of everything from 4.5 on, and
+  // Sonnet 5 undercuts Sonnet 4.6 by a third. A family-wide rate hides both.
+  assert.equal(creditsFor(input, 'claude-opus-4-1'), 15);
+  assert.equal(creditsFor(input, 'claude-opus-5'), 5);
+  assert.equal(creditsFor(input, 'claude-sonnet-4-6'), 3);
+  assert.equal(creditsFor(input, 'claude-sonnet-5'), 2);
+  assert.equal(creditsFor(input, 'claude-haiku-4-5'), 1);
+});
+
+test('provider-flavoured and dated model ids price the same as the plain one', () => {
+  const input = { ...MTOK, inputTokens: 1_000_000 };
+  for (const id of [
+    'claude-opus-4-5-20251101',
+    'us.anthropic.claude-opus-4-5-20251101-v1:0',
+    'claude-opus-4-5@20251101',
+    'claude-opus-4-5[1m]',
+  ]) {
+    assert.equal(creditsFor(input, id), 5, id);
+  }
+});
+
+test('an unrecognised model falls back to its family, not to silence', () => {
+  const input = { ...MTOK, inputTokens: 1_000_000 };
+  assert.equal(resolveRates('claude-opus-99').basis, 'family');
+  assert.equal(creditsFor(input, 'claude-opus-99'), 5);
+  assert.equal(resolveRates('claude-opus-5').basis, 'model');
+});
+
+test('fast mode, the US surcharge and web search all cost extra', () => {
+  const input = { ...MTOK, inputTokens: 1_000_000 };
+  assert.equal(creditsFor(input, 'claude-opus-5', { speed: 'fast' }), 10);
+  // Fast mode does not exist on Sonnet, so the flag must not invent a price.
+  assert.equal(creditsFor(input, 'claude-sonnet-5', { speed: 'fast' }), 2);
+  assert.equal(creditsFor(input, 'claude-opus-5', { inferenceGeo: 'us' }), 5.5);
+  // Per-request charges sit outside the geo multiplier.
+  assert.equal(creditsFor({ ...MTOK, webSearches: 10 }, 'claude-opus-5', { inferenceGeo: 'us' }), 0.1);
 });
 
 test('model families are recognised from full ids and aliases', () => {
@@ -86,4 +128,43 @@ test('an empty project folder falls back to the slug rather than failing', () =>
   const projectDir = join(dir, '-tmp-x');
   mkdirSync(projectDir);
   assert.equal(projectPathOf(projectDir, '-tmp-x'), '/tmp/x');
+});
+
+test("Claude Code's own session total is picked out of the transcript", () => {
+  const line = JSON.stringify({
+    type: 'cost-state',
+    sessionId: 's-1',
+    totalCostUSD: 10.9,
+    hasUnknownModelCost: false,
+  });
+  const parsed = parseEntry(line, '/repo/demo') as any;
+  assert.equal(parsed.kind, 'session-cost');
+  assert.equal(parsed.usd, 10.9);
+
+  // A session Claude Code could not price itself is no use as a check.
+  const unknown = JSON.stringify({ type: 'cost-state', sessionId: 's-2', totalCostUSD: 5, hasUnknownModelCost: true });
+  assert.equal(parseEntry(unknown, '/repo/demo'), null);
+});
+
+test('the cache-write aggregate is never lost when the breakdown disagrees', () => {
+  // The per-tier fields can add up to less than the total. The remainder still
+  // costs money, so it lands on the cheaper 5m tier rather than vanishing.
+  const line = JSON.stringify({
+    type: 'assistant',
+    requestId: 'r-1',
+    timestamp: '2026-08-20T10:00:00Z',
+    message: {
+      id: 'm-1',
+      model: 'claude-opus-5',
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 1000,
+        cache_creation: { ephemeral_1h_input_tokens: 400, ephemeral_5m_input_tokens: 0 },
+      },
+    },
+  });
+  const parsed = parseEntry(line, '/repo/demo') as any;
+  assert.equal(parsed.event.cacheWrite1h, 400);
+  assert.equal(parsed.event.cacheWrite5m, 600);
 });

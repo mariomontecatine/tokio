@@ -20,7 +20,12 @@ the design decisions and is kept accurate.
 
 ## Testing
 
-`npm test` must never spend tokens. The executor is tested against `test/fake-claude.sh`, which
+`npm test` must never spend tokens, and must never touch the machine it runs on. The server tests
+point `XDG_CONFIG_HOME` at a temp directory before anything imports the config, because
+`PATCH /api/config` calls `saveConfig`, which writes to the real path — without that redirect the
+suite edits the config of whoever runs it.
+
+The executor is tested against `test/fake-claude.sh`, which
 emits the same `stream-json` shape as the real CLI and can simulate a rate limit
 (`TOKIO_FAKE_MODE=ratelimit`) or a crash (`TOKIO_FAKE_MODE=crash`). Extend that script rather than
 reaching for the real binary.
@@ -36,6 +41,19 @@ reconstruction from transcripts exists only as a fallback for API-key users and 
 If you touch the meter: never let an estimated percentage override a reported one, and keep
 `WindowStatus.source` accurate — the UI shows it, and the whole point is that a reader can tell
 which is which.
+
+## The prices are not ours to invent either
+
+`src/meter/catalog.ts` mirrors the model catalog Claude Code carries — the one behind its own
+`/cost`. Keep it a mirror: prices are per model ID (Opus 4.1 is three times Opus 4.5), fast mode
+and the `us` inference surcharge and per-request web search all count, and an unrecognised model
+falls back to its family's newest tier rather than being silently dropped.
+
+Two rules follow. Bump `PRICING_VERSION` in `src/db.ts` whenever a rate changes, or stored history
+keeps the old price forever. And leave the reconciliation in `meter/value.ts` alone: Claude Code
+writes a `cost-state` line into some transcripts with its own session total, and comparing against
+it is the only external check this project has. Landing a few percent under it is correct —
+session-titling, compaction and retries never reach the transcript.
 
 ## Honesty rules for this project
 

@@ -24,7 +24,7 @@ export function discoverTranscripts(claudeDir: string): string[] {
 }
 
 /**
- * `-home-mario-repos-tokio` -> `/home/mario/repos/tokio`.
+ * `-home-alice-repos-widget` -> `/home/alice/repos/widget`.
  *
  * Lossy: a directory whose own name contains a hyphen (`mininet-agents`) comes
  * back with that hyphen turned into a slash, because the slug throws the

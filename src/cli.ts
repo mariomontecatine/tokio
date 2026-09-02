@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
-import { spawn } from 'node:child_process';
 import { openDb } from './db.ts';
-import { loadConfig, saveConfig, configPath, claudeDir } from './config.ts';
+import { loadConfig, saveConfig, configPath, claudeDir, redactConfig } from './config.ts';
 import { Ingestor } from './ingest/index.ts';
 import { computeStatus } from './meter/index.ts';
 import { computeValue } from './meter/value.ts';
@@ -13,14 +12,15 @@ import { addAnchor, planLabel } from './plans/calibrate.ts';
 import { createJob, deleteJob, getJob, listJobs, updateJob } from './queue/store.ts';
 import { recentSessions } from './server/projects.ts';
 import { effectiveModel } from './models.ts';
-import { daemonRunning, dashboardUrl } from './net.ts';
+import { daemonRunning, dashboardUrl, openInBrowser } from './net.ts';
 import type { RunPolicy, Safety } from './types.ts';
 
 const HELP = `tokio — queue prompts for your coding agent and watch your subscription quota
 
 Usage
-  tokio                                      Start it, or show what's running
-  tokio start [--port <n>] [--host <addr>]   Run the daemon and dashboard
+  tokio [--no-open]                          Open the dashboard, starting it if needed
+  tokio start [--port <n>] [--host <addr>]   Run the daemon and dashboard (no browser)
+  tokio open                                 Open the dashboard in your browser
   tokio status [--refresh]                   Show quota, burn rate and queue
   tokio refresh                              Re-read the real numbers and show them
   tokio value                                What the subscription has been worth
@@ -235,7 +235,15 @@ function cmdValue(): void {
     }
   }
   console.log('\n  Counted from the transcripts on this machine, at list API prices.');
-  console.log('  Work done elsewhere is not in here, so treat it as a floor.\n');
+  console.log('  Work done elsewhere is not in here, so treat it as a floor.');
+  if (v.reconciliation) {
+    const r = v.reconciliation;
+    console.log(
+      `  Checked against Claude Code's own total on ${r.sessions} session(s): ` +
+        `${money(r.ourUsd)} here vs ${money(r.reportedUsd)} there (${(r.ratio * 100).toFixed(0)}%).`,
+    );
+  }
+  console.log('');
 }
 
 function cmdSessions(cwd: string): void {
@@ -250,22 +258,43 @@ function cmdSessions(cwd: string): void {
 }
 
 /**
+ * Show the dashboard, and say so when we couldn't.
+ *
+ * A browser is not a given — servers, containers and bare WSL images have
+ * none — so a failure to open one prints the URL instead of pretending.
+ */
+async function showDashboard(url: string): Promise<void> {
+  if (await openInBrowser(url)) {
+    console.log(`  Opened ${url}`);
+    return;
+  }
+  console.log(`  Couldn't open a browser here. The dashboard is at ${url}`);
+}
+
+/**
  * What plain `tokio` does.
  *
- * Typing the name of a tool should get you the tool, not a page of syntax. If
- * nothing is running, run it; if something already is, say where it is and how
- * things stand rather than failing on a busy port.
+ * Typing the name of a tool should get you the tool, not a page of syntax, and
+ * for this one the tool is the dashboard — so open it. If nothing is running,
+ * start it first; if something already is, don't fail on a busy port, just go
+ * to the page that's already there.
+ *
+ * `tokio start` deliberately does not do this: it's the form that goes in a
+ * systemd unit, where launching a browser would be nonsense.
  */
-async function cmdDefault(): Promise<void> {
+async function cmdDefault(open: boolean): Promise<void> {
   const cfg = loadConfig();
   if (await daemonRunning(cfg)) {
-    console.log(`\n  Already running — ${dashboardUrl(cfg)}`);
+    const url = dashboardUrl(cfg);
+    console.log(`\n  Already running — ${url}`);
+    if (open) await showDashboard(url);
     await cmdStatus(false);
     console.log('  Run "tokio help" for everything else.\n');
     return;
   }
   const { startDaemon } = await import('./daemon.ts');
-  await startDaemon({});
+  const started = await startDaemon({});
+  if (open) await showDashboard(started.url);
 }
 
 async function main(): Promise<void> {
@@ -276,7 +305,11 @@ async function main(): Promise<void> {
     console.log(HELP);
     return;
   }
-  if (!command) return cmdDefault();
+  // Bare `tokio`, with or without its one flag. An option in the command slot
+  // is still the default command, not an unknown one.
+  if (!command || command.startsWith('-')) {
+    return cmdDefault(!argv.includes('--no-open'));
+  }
 
   const { values, positionals } = parseArgs({
     args: argv.slice(1),
@@ -324,12 +357,23 @@ async function main(): Promise<void> {
       const cfg = loadConfig();
       saveConfig(cfg);
       console.log(`\n  ${configPath()}\n`);
-      console.log(JSON.stringify(cfg, null, 2));
+      // Redacted, because this is the command people paste into bug reports.
+      console.log(JSON.stringify(redactConfig(cfg), null, 2));
+      console.log('\n  Secrets are shown masked. The real values are in the file above.\n');
       return;
     }
     case 'open': {
       const cfg = loadConfig();
-      spawn('xdg-open', [`http://${cfg.host}:${cfg.port}`], { stdio: 'ignore', detached: true }).unref();
+      // dashboardUrl, not host:port: it resolves a 0.0.0.0 bind to an address a
+      // browser can actually reach, and carries the access token when one is needed.
+      const url = dashboardUrl(cfg);
+      if (!(await daemonRunning(cfg))) {
+        console.log('  Nothing is running yet — start it with "tokio".');
+        return;
+      }
+      console.log('');
+      await showDashboard(url);
+      console.log('');
       return;
     }
     default:

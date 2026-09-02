@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { openDb } from '../src/db.ts';
 import { loadConfig, type Config } from '../src/config.ts';
 import { computeValue } from '../src/meter/value.ts';
@@ -94,4 +97,50 @@ test('an empty history reports nothing rather than a zero payback', () => {
   assert.equal(v.equivalentUsd, 0);
   assert.equal(v.multiple, null, 'no history is unknown, not "the plan returned nothing"');
   assert.deepEqual(v.byMonth, []);
+});
+
+test("the report says how our total compares with Claude Code's own", () => {
+  const db = openDb(':memory:');
+  const cfg = loadConfig();
+  db.prepare(
+    `INSERT INTO events (messageId, requestId, ts, model, family, inputTokens, outputTokens,
+      cacheWrite5m, cacheWrite1h, cacheRead, credits, sessionId, project, turnId, source)
+     VALUES ('m1','r1',?, 'claude-opus-5','opus',0,0,0,0,0,9.6,'s-1','/repo','', 'transcript')`,
+  ).run(Date.now() - DAY);
+  db.prepare('INSERT INTO session_costs (sessionId, usd, seenAt) VALUES (?,?,?)').run('s-1', 10, Date.now());
+
+  const r = computeValue(db, cfg).reconciliation!;
+  assert.equal(r.sessions, 1);
+  assert.equal(r.reportedUsd, 10);
+  assert.ok(Math.abs(r.ratio - 0.96) < 1e-9);
+});
+
+test('with nothing to compare against, no comparison is invented', () => {
+  const db = openDb(':memory:');
+  assert.equal(computeValue(db, loadConfig()).reconciliation, null);
+});
+
+test('a price correction is applied to history, not just to new events', () => {
+  // A real database on disk, so it can be closed and reopened the way a restart
+  // does — that reopen is what runs the migration.
+  const file = join(mkdtempSync(join(tmpdir(), 'tokio-reprice-')), 'tokio.db');
+  const first = openDb(file);
+  // An Opus event priced at the old $15/Mtok input rate, as an install made
+  // before the correction would have stored it.
+  first.prepare(
+    `INSERT INTO events (messageId, requestId, ts, model, family, inputTokens, outputTokens,
+      cacheWrite5m, cacheWrite1h, cacheRead, credits, sessionId, project, turnId, source)
+     VALUES ('m1','r1',?, 'claude-opus-5','opus',1000000,0,0,0,0,15,'s-1','/repo','', 'transcript')`,
+  ).run(Date.now());
+  first.prepare("DELETE FROM kv WHERE key = 'pricingVersion'").run();
+  assert.equal((first.prepare('SELECT credits FROM events').get() as { credits: number }).credits, 15);
+  first.close();
+
+  const reopened = openDb(file);
+  assert.equal(
+    (reopened.prepare('SELECT credits FROM events').get() as { credits: number }).credits,
+    5,
+    'Opus 5 input is $5/Mtok, and the stored history now says so',
+  );
+  reopened.close();
 });

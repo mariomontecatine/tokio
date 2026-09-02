@@ -9,7 +9,7 @@ import type { UsageProbe } from '../usage/probe.ts';
 
 export { buildBlocks, activeBlock, floorToHour, HOUR } from './blocks.ts';
 export { buildWeek, weekStart } from './weekly.ts';
-export { creditsFor, familyOf, PRICES } from './weights.ts';
+export { creditsFor, familyOf, ratesFor, resolveRates, TIERS } from './weights.ts';
 export { computeValue } from './value.ts';
 
 const BURN_SAMPLE_MS = 30 * 60_000;

@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { dataDir } from './config.ts';
+import { creditsFor } from './meter/weights.ts';
 
 export type Db = DatabaseSync;
 
@@ -17,6 +18,9 @@ CREATE TABLE IF NOT EXISTS events (
   cacheWrite5m  INTEGER NOT NULL,
   cacheWrite1h  INTEGER NOT NULL,
   cacheRead     INTEGER NOT NULL,
+  webSearches   INTEGER NOT NULL DEFAULT 0,
+  speed         TEXT NOT NULL DEFAULT 'standard',
+  inferenceGeo  TEXT NOT NULL DEFAULT '',
   credits       REAL NOT NULL,
   sessionId     TEXT NOT NULL,
   project       TEXT NOT NULL,
@@ -111,8 +115,25 @@ CREATE TABLE IF NOT EXISTS probes (
   error           TEXT
 );
 
+-- Claude Code's own total for a session, lifted from the transcript. Not our
+-- arithmetic, so it is kept apart from the events table and used only to check it.
+CREATE TABLE IF NOT EXISTS session_costs (
+  sessionId TEXT PRIMARY KEY,
+  usd       REAL NOT NULL,
+  seenAt    INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
+
+/**
+ * Bump this whenever the price table changes.
+ *
+ * Credits are stored per event, so a correction to the rates would otherwise
+ * only apply to future transcripts and leave months of history priced at the
+ * old numbers — with nothing on screen to say which was which.
+ */
+const PRICING_VERSION = '2';
 
 let cached: Db | null = null;
 
@@ -124,8 +145,84 @@ export function openDb(path?: string): Db {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA busy_timeout = 5000');
   db.exec(SCHEMA);
+  addMissingColumns(db);
+  repriceEvents(db);
   if (!path) cached = db;
   return db;
+}
+
+/** Columns added after the first release, for databases that predate them. */
+function addMissingColumns(db: Db): void {
+  const columns = new Set(
+    (db.prepare('PRAGMA table_info(events)').all() as unknown as { name: string }[]).map((c) => c.name),
+  );
+  const wanted: [string, string][] = [
+    ['webSearches', "INTEGER NOT NULL DEFAULT 0"],
+    ['speed', "TEXT NOT NULL DEFAULT 'standard'"],
+    ['inferenceGeo', "TEXT NOT NULL DEFAULT ''"],
+  ];
+  for (const [name, decl] of wanted) {
+    if (!columns.has(name)) db.exec(`ALTER TABLE events ADD COLUMN ${name} ${decl}`);
+  }
+}
+
+/**
+ * Re-price every stored event when the rates change.
+ *
+ * Token counts come from the API and never change; only what a token costs
+ * does. Recomputing from the counts we already hold is exact, so history stops
+ * being a museum of whatever the price table said the week it was ingested.
+ */
+function repriceEvents(db: Db): void {
+  if (getKv(db, 'pricingVersion') === PRICING_VERSION) return;
+
+  const rows = db
+    .prepare(
+      `SELECT messageId, requestId, model, inputTokens, outputTokens,
+              cacheWrite5m, cacheWrite1h, cacheRead, webSearches, speed, inferenceGeo
+       FROM events`,
+    )
+    .all() as unknown as (Omit<RepricedRow, 'credits'>)[];
+
+  const update = db.prepare('UPDATE events SET credits = ? WHERE messageId = ? AND requestId = ?');
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) {
+      const credits = creditsFor(
+        {
+          inputTokens: r.inputTokens,
+          outputTokens: r.outputTokens,
+          cacheWrite5m: r.cacheWrite5m,
+          cacheWrite1h: r.cacheWrite1h,
+          cacheRead: r.cacheRead,
+          webSearches: r.webSearches,
+        },
+        r.model,
+        { speed: r.speed, inferenceGeo: r.inferenceGeo },
+      );
+      update.run(credits, r.messageId, r.requestId);
+    }
+    setKv(db, 'pricingVersion', PRICING_VERSION);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+interface RepricedRow {
+  messageId: string;
+  requestId: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheWrite5m: number;
+  cacheWrite1h: number;
+  cacheRead: number;
+  webSearches: number;
+  speed: string;
+  inferenceGeo: string;
+  credits: number;
 }
 
 export function getKv(db: Db, key: string): string | null {

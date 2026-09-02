@@ -46,14 +46,18 @@ cd tokio
 npm install && npm run build
 npm link              # deja `tokio` en el PATH
 
-tokio                 # arráncalo — o, si ya está en marcha, mira cómo va
+tokio                 # abre el panel, arrancando el daemon si no lo estaba
 tokio status          # solo los números, sin necesidad de daemon
 ```
 
 El `npm link` es lo que deja `tokio` en tu PATH, así que funciona desde
-cualquier carpeta, igual que `claude`. `tokio` a secas arranca el daemon; si lo
-vuelves a ejecutar más tarde te informa del que ya hay en vez de fallar por el
-puerto ocupado.
+cualquier carpeta, igual que `claude`. Escribir `tokio` en cualquier sitio
+arranca el daemon si no está en marcha y abre el panel en tu navegador; si lo
+vuelves a ejecutar más tarde va directo a la página que ya se está sirviendo, en
+vez de fallar por el puerto ocupado.
+
+Añade `--no-open` si quieres el daemon sin navegador, y usa `tokio start` en una
+unidad de servicio: esa forma nunca intenta abrir nada.
 
 No hay nada que configurar ni cuenta que crear. `tokio` lee los transcripts que Claude Code ya
 escribe en `~/.claude/projects/`, así que tu historial entero está ahí desde la primera ejecución.
@@ -94,7 +98,7 @@ Cierra el portátil.
   Week Opus  ████████░░░░░░░░░░░░░░░░  34%   $84.75 of $250.00
 
   Burning $50.63/h — window runs dry around 10:53 PM
-  Worth $1013.15 at API prices for $100.00 paid — 10.1× your subscription
+  Worth $389.84 at API prices for $102.35 paid — 3.8× your subscription
 
   Queue (2):
     972dab44  queued    ~$1.80  comprueba que los tests de meter pasan y arreg
@@ -118,12 +122,12 @@ $ tokio value
 
   Since 1/8/2026 (your oldest transcript)
 
-  Run on the API this would have cost      $1013.15
-  Subscription over the same period         $100.00  (1 month)
-  So the plan is paying back                   10.1×
+  Run on the API this would have cost       $389.84
+  Subscription over the same period         $102.35  (31 days at $100.00/month)
+  So the plan is paying back                   3.8×
 
-  Last 7 days   $97.46
-  Last 5 hours  $46.92
+  Last 7 days   $77.47
+  Last 5 hours  $15.89
 ```
 
 Cada respuesta que has recibido está en los transcripts, y cada una tiene un precio. Sumándolas
@@ -135,6 +139,46 @@ Dos matices honestos, que el propio comando imprime:
   Claude, no está ahí: el número es un suelo, no un total.
 - Es **precio de lista de la API**, es decir, lo que habrías pagado *tú*. No es lo que le cuesta
   a Anthropic servirte; su coste de inferencia es suyo y bastante menor.
+
+### De dónde salen los precios
+
+No nos los inventamos. Claude Code lleva dentro un catálogo de modelos mantenido a mano —el mismo
+que hay detrás de su propio `/cost` y de las etiquetas por Mtok de `/model`— y
+[`src/meter/catalog.ts`](src/meter/catalog.ts) lo replica: los mismos tramos, el mismo mapeo de
+modelo a tramo, los mismos recargos. De ahí salen tres cosas, y son la diferencia entre un número
+y una suposición:
+
+- **Los precios son por modelo, no por familia.** Opus 4.1 va a `$15/$75` por Mtok; Opus 4.5 y
+  todo lo posterior, a `$5/$25`. Sonnet 4.6 son `$3/$15` y Sonnet 5 `$2/$10`. Una tarifa por
+  familia se equivoca en la mayoría de los transcripts por un múltiplo, no por un redondeo.
+- **Los extras también cuentan.** El modo rápido es el mismo modelo a tarifa premium,
+  `inference_geo: "us"` lleva un 10% de recargo, las escrituras de caché se reparten entre el
+  tramo de 5 minutos y el de 1 hora, y las búsquedas web del servidor se cobran por petición. Las
+  cuatro cosas están en el transcript, así que las cuatro se cuentan.
+- **Corregir una tarifa recalcula tu historial.** Los créditos se guardan por evento, pero los
+  recuentos de tokens de los que salieron no cambian nunca, así que corregir una tarifa recalcula
+  todos los eventos que ya tenías en vez de dejar meses antiguos valorados con la tabla de aquella
+  semana.
+
+**Y se comprueba a sí mismo.** Claude Code escribe a veces una línea `cost-state` en el transcript
+con el total que calculó *él* para esa sesión. Donde la haya dejado, `tokio value` compara ambos y
+lo dice:
+
+```
+  Checked against Claude Code's own total on 2 session(s): $37.26 here vs $38.96 there (96%).
+```
+
+Quedarse un poco por debajo es lo esperado y es la respuesta honesta: unas pocas llamadas —el
+Haiku que titula la sesión, la compactación, los reintentos— nunca aparecen en el transcript como
+mensajes del asistente, así que no hay nada ahí que podamos contar. Ese hueco es el matiz del
+"suelo" de arriba, pero medido en vez de afirmado.
+
+**No hay ninguna cifra en dólares que pedirle a Anthropic.** Con suscripción, `claude -p "/cost"`
+devuelve porcentajes y horas de reinicio y ningún coste —a propósito, porque un plan Pro o Max no
+se factura por token—. Los informes de uso y coste de la Admin API cubren organizaciones con clave
+de API, no suscripciones. Así que los tokens exactos vienen de Anthropic (el objeto `usage` de
+cada línea del transcript), los precios vienen del catálogo de Claude Code, y la multiplicación es
+lo único que ponemos nosotros.
 
 Si te suscribiste antes de tu transcript más antiguo, díselo para que cuadren los meses:
 
@@ -232,6 +276,34 @@ Dos costumbres que compensan: encola el trabajo desatendido sobre una rama que n
 rebobinar, y reserva `plan` para lo que no tengas pensado del todo. `tokio` nunca amplía los
 permisos de un trabajo por su cuenta, y un trabajo solo toca el directorio que le diste.
 
+### Privacidad, y qué sale de tu máquina
+
+No sale nada que no hayas configurado tú. Conviene saberlo antes de usarlo, y antes de publicar un
+fork:
+
+- **`tokio` no lee, ni guarda, ni reenvía tus credenciales de Claude.** No toca
+  `~/.claude/.credentials.json` ni ninguna clave de API. Lanza `claude` como subproceso y deja que
+  Claude Code se autentique solo, igual que cuando lo ejecutas a mano.
+- **La base de datos y la configuración se quedan en tu máquina**, en `~/.local/share/tokio/` y
+  `~/.config/tokio/` —fuera del repositorio, así que un `git add .` no puede arrastrarlas—. La
+  configuración se escribe solo para el propietario (`0600`) porque puede contener un token de
+  acceso y un token de bot de Telegram.
+- **El panel escucha en `127.0.0.1` por defecto.** Si lo abres a otra dirección, el daemon genera
+  un token de acceso aleatorio e imprime una URL que lo lleva; sin ese token la API responde 401.
+  El token viaja en una cabecera en todas partes salvo en `/api/stream`, que no puede enviarla.
+- **`tokio config` y `GET /api/config` enmascaran los secretos.** Puedes pegar la salida en un
+  informe de fallo sin releerla. Los valores reales están en el fichero, que el comando te nombra.
+- **Las notificaciones son lo único que sale.** Un tema de ntfy, un chat de Telegram o un webhook
+  reciben solo lo que hayas configurado, y los tres están apagados hasta que los enciendes. El
+  nombre de un tema de ntfy *es* la contraseña de ese tema —quien lo sepa puede leer tus
+  notificaciones—, así que ponlo imposible de adivinar.
+
+Lo que hay que tener claro es que **la API puede ejecutar código como tú**. Encolar un trabajo
+significa ejecutar `claude` en un directorio que tú indicas, y `--safety full` significa
+ejecutarlo sin restricciones. En loopback eso es tu propia shell. Si expones el panel a una red, el
+token es lo único que separa a alguien de esa red de una shell en tu máquina: trátalo como una
+clave SSH y no pongas el daemon en una red en la que no confíes.
+
 El planificador guarda además una **reserva** (10% por defecto). Un trabajo no arranca si su
 estimación pesimista se comería ese suelo, para que una cola desatendida no te vacíe en silencio
 la ventana que estabas guardando. Con `--urgent` se salta la regla.
@@ -240,11 +312,12 @@ la ventana que estabas guardando. Con `--urgent` se salta la regla.
 
 | Orden | Qué hace |
 |---|---|
-| `tokio` | Arranca el daemon, o informa del que ya está corriendo |
+| `tokio` | Abre el panel, arrancando el daemon si hace falta (`--no-open` para no abrir navegador) |
 | `tokio status` | Cuota, ritmo de quemado, agotamiento previsto y cola |
 | `tokio refresh` | Vuelve a leer los números reales de Claude Code y los muestra |
 | `tokio value` | Lo que ha valido la suscripción, mes a mes |
-| `tokio start` | Daemon, planificador y panel |
+| `tokio start` | Daemon, planificador y panel, sin abrir navegador |
+| `tokio open` | Abre el panel de un daemon que ya esté en marcha |
 | `tokio add <prompt>` | Encola un prompt |
 | `tokio ls [--all]` | Lista los trabajos |
 | `tokio show <id>` | Un trabajo y su salida |
@@ -252,7 +325,7 @@ la ventana que estabas guardando. Con `--urgent` se salta la regla.
 | `tokio rm <id>` | Quita un trabajo |
 | `tokio calibrate <pct>` | Le enseña tu límite real |
 | `tokio sessions` | Sesiones que puedes retomar en este directorio |
-| `tokio config` | Muestra el fichero de configuración |
+| `tokio config` | Muestra el fichero de configuración, con los secretos enmascarados |
 
 Opciones de `add`:
 
