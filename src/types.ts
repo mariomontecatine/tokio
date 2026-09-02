@@ -16,6 +16,12 @@ export interface UsageEvent {
   cacheWrite5m: number;
   cacheWrite1h: number;
   cacheRead: number;
+  /** Server-side web searches, billed per request. */
+  webSearches: number;
+  /** `standard` or `fast`; fast mode is the same model at premium rates. */
+  speed: string;
+  /** Where inference ran. "us" carries a surcharge; empty when unreported. */
+  inferenceGeo: string;
   /** USD-equivalent cost of this response. See meter/weights.ts. */
   credits: number;
   sessionId: string;

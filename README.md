@@ -46,13 +46,17 @@ cd tokio
 npm install && npm run build
 npm link              # puts `tokio` on your PATH
 
-tokio                 # start it — or, if it's already up, see how things stand
+tokio                 # opens the dashboard, starting the daemon if it isn't up
 tokio status          # just the numbers, no daemon needed
 ```
 
 `npm link` is what puts `tokio` on your PATH, so it works from any directory,
-the way `claude` does. Plain `tokio` starts the daemon; run it again later and
-it reports on the one already running instead of failing on a busy port.
+the way `claude` does. Typing `tokio` anywhere starts the daemon if it isn't
+running and opens the dashboard in your browser; run it again later and it goes
+straight to the page already being served instead of failing on a busy port.
+
+Add `--no-open` if you want the daemon without the browser, and use `tokio
+start` in a service unit — that form never tries to open anything.
 
 There's nothing to configure and no account to make. `tokio` reads the transcripts Claude Code
 already writes to `~/.claude/projects/`, so your entire history is there on first run.
@@ -93,7 +97,7 @@ Close the laptop.
   Week Opus  ████████░░░░░░░░░░░░░░░░  34%   $84.75 of $250.00
 
   Burning $50.63/h — window runs dry around 10:53 PM
-  Worth $1013.15 at API prices for $100.00 paid — 10.1× your subscription
+  Worth $389.84 at API prices for $102.35 paid — 3.8× your subscription
 
   Queue (2):
     972dab44  queued    ~$1.80  comprueba que los tests de meter pasan y arreg
@@ -130,12 +134,12 @@ $ tokio value
 
   Since 1/8/2026 (your oldest transcript)
 
-  Run on the API this would have cost      $1013.15
-  Subscription over the same period         $100.00  (1 month)
-  So the plan is paying back                   10.1×
+  Run on the API this would have cost       $389.84
+  Subscription over the same period         $102.35  (31 days at $100.00/month)
+  So the plan is paying back                   3.8×
 
-  Last 7 days   $97.46
-  Last 5 hours  $46.92
+  Last 7 days   $77.47
+  Last 5 hours  $15.89
 ```
 
 Every assistant response you've ever had is in the transcripts, and every one of them has a
@@ -147,6 +151,44 @@ Two honest caveats, which the command prints itself:
   app, isn't in there — so the number is a floor, not a total.
 - It's **list API pricing**, which is what *you* would have paid. It is not what Anthropic spends
   serving you; their inference cost is their own and much lower.
+
+### Where the prices come from
+
+Not from us. Claude Code ships a hand-maintained model catalog — the same one behind its own
+`/cost` and the per-Mtok labels in `/model` — and [`src/meter/catalog.ts`](src/meter/catalog.ts)
+mirrors it: the same tiers, the same model-to-tier mapping, the same surcharges. Three things
+follow, and they are the difference between a number and a guess:
+
+- **Prices are per model, not per family.** Opus 4.1 is `$15/$75` per Mtok; Opus 4.5 and
+  everything after it is `$5/$25`. Sonnet 4.6 is `$3/$15`, Sonnet 5 is `$2/$10`. A family-wide
+  rate misprices most transcripts by a multiple, not by a rounding error.
+- **The extras are counted too.** Fast mode is the same model at premium rates, `inference_geo:
+  "us"` carries a 10% surcharge, cache writes are split across their 5-minute and 1-hour tiers,
+  and server-side web searches are billed per request. All four are in the transcript, so all
+  four are counted.
+- **A rate change re-prices your history.** Credits are stored per event, but the token counts
+  they were computed from never change, so correcting a rate recomputes every event you already
+  have rather than leaving old months priced at whatever the table said that week.
+
+**And it checks itself.** Claude Code sometimes writes a `cost-state` line into a transcript with
+the total *it* computed for that session. Where it did, `tokio value` compares the two and prints
+the result:
+
+```
+  Checked against Claude Code's own total on 2 session(s): $37.26 here vs $38.96 there (96%).
+```
+
+Landing slightly under is expected and is the honest outcome: a few calls — the Haiku that titles
+a session, compaction, retries — never appear in the transcript as assistant messages, so there
+is nothing there for us to count. That gap is the floor caveat above, measured instead of
+asserted.
+
+**There is no dollar figure to ask Anthropic for.** On a subscription, `claude -p "/cost"` returns
+percentages and reset times and no cost at all — deliberately, because a Pro or Max plan is not
+billed per token. The Admin API's usage and cost reports cover API-key organisations, not
+subscriptions. So the exact tokens come from Anthropic (the `usage` object in every transcript
+line), the prices come from Claude Code's catalog, and the multiplication is the only part that
+is ours.
 
 If you subscribed before your oldest transcript, tell `tokio` when, so the months line up:
 
@@ -190,8 +232,9 @@ usage. `tokio` keys on `messageId` + `requestId`, so each response counts once.
 
 **Cost as the unit.** Tokens aren't comparable across models — an Opus turn drains a plan about
 five times faster than a Sonnet one, and a cache read is a tenth of a fresh input token.
-Everything is converted to one USD-equivalent unit using published API pricing, which is what
-subscription limits actually scale with.
+Everything is converted to one USD-equivalent unit using per-model list prices, which is what
+subscription limits actually scale with. The rates are mirrored from Claude Code's own model
+catalog rather than typed in from memory — see [Where the prices come from](#where-the-prices-come-from).
 
 **Turn-level history.** Calls are grouped by the user prompt that triggered them, so an estimate
 answers "what does one request like this cost" instead of "what does a whole session cost". This
@@ -255,6 +298,33 @@ Two habits worth having: queue unattended work onto a branch you don't mind rewi
 `plan` for anything you haven't thought through. `tokio` never widens a job's permissions on its
 own, and a job only ever touches the directory you gave it.
 
+### Privacy, and what leaves your machine
+
+Nothing goes anywhere you didn't configure. Worth knowing before you run it, and before you push
+a fork of it:
+
+- **`tokio` never reads, stores or forwards your Claude credentials.** It doesn't touch
+  `~/.claude/.credentials.json` or any API key. It launches `claude` as a subprocess and lets
+  Claude Code authenticate itself, exactly as it does when you run it by hand.
+- **The database and config stay on your machine**, in `~/.local/share/tokio/` and
+  `~/.config/tokio/` — outside the repo, so a `git add .` cannot pick them up. The config is
+  written owner-only (`0600`) because it can hold an access token and a Telegram bot token.
+- **The dashboard binds to `127.0.0.1` by default.** Bind it anywhere else and the daemon mints a
+  random access token and prints a URL carrying it; without that token the API returns 401. The
+  token travels in a header everywhere except `/api/stream`, which cannot send one.
+- **`tokio config` and `GET /api/config` mask secrets.** Paste the output into a bug report
+  without reading it twice. The real values are in the file, which the command names.
+- **Notifications are the one thing that leaves.** An ntfy topic, a Telegram chat or a webhook
+  only receives what you configured it to receive, and all three are off until you set them. An
+  ntfy topic name *is* the password for that topic — anyone who knows it can read your
+  notifications — so make it unguessable.
+
+The thing to be deliberate about is that **the API can run code as you**. Queueing a job means
+running `claude` in a directory you name, and `--safety full` means running it unrestricted. On
+loopback that's your own shell. If you expose the dashboard to a network, the token is the only
+thing between someone on that network and a shell on your machine — so treat it like an SSH key,
+and don't put the daemon on an untrusted network.
+
 The scheduler also keeps a **reserve** (10% by default). A job won't start if its pessimistic
 estimate would eat into that floor, so an unattended queue can't quietly drain the window you
 were saving for yourself. Mark a job `--urgent` to override.
@@ -263,11 +333,12 @@ were saving for yourself. Mark a job `--urgent` to override.
 
 | Command | What it does |
 |---|---|
-| `tokio` | Start the daemon, or report on the one already running |
+| `tokio` | Open the dashboard, starting the daemon if it isn't up (`--no-open` to skip the browser) |
 | `tokio status` | Quota, burn rate, projected exhaustion, queue |
 | `tokio refresh` | Re-read the real numbers from Claude Code and show them |
 | `tokio value` | What the subscription has been worth, month by month |
-| `tokio start` | Daemon, scheduler and dashboard |
+| `tokio start` | Daemon, scheduler and dashboard, without opening a browser |
+| `tokio open` | Open the dashboard of a daemon that's already running |
 | `tokio add <prompt>` | Queue a prompt |
 | `tokio ls [--all]` | List jobs |
 | `tokio show <id>` | A job and its output |
@@ -275,7 +346,7 @@ were saving for yourself. Mark a job `--urgent` to override.
 | `tokio rm <id>` | Remove a job |
 | `tokio calibrate <pct>` | Teach it your real limit |
 | `tokio sessions` | Resumable sessions for this directory |
-| `tokio config` | Show the config file and its values |
+| `tokio config` | Show the config file and its values, with secrets masked |
 
 Options for `add`:
 
@@ -370,9 +441,15 @@ No, and it would be wrong to read it that way. It's what *you* would have paid a
 for the same work — the alternative you didn't buy. Anthropic's actual serving cost is lower and
 isn't public.
 
+**Are the dollar figures right?**
+They use the same per-model rates Claude Code uses, and `tokio value` checks itself against
+Claude Code's own session totals wherever it left one in a transcript — see
+[Where the prices come from](#where-the-prices-come-from).
+
 **Where's my data?**
 `~/.local/share/tokio/tokio.db`, on your machine. Nothing is sent anywhere. The dashboard binds
-to loopback unless you deliberately change it.
+to loopback unless you deliberately change it. Details in
+[Privacy, and what leaves your machine](#privacy-and-what-leaves-your-machine).
 
 ## Roadmap
 

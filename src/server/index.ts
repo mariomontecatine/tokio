@@ -1,11 +1,12 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
+import { timingSafeEqual } from 'node:crypto';
 import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Db } from '../db.ts';
 import type { Config } from '../config.ts';
-import { saveConfig, claudeDir } from '../config.ts';
+import { saveConfig, claudeDir, redactConfig } from '../config.ts';
 import { computeStatus } from '../meter/index.ts';
 import { computeValue } from '../meter/value.ts';
 import { predict } from '../estimator/predict.ts';
@@ -18,6 +19,32 @@ import { effectiveModel } from '../models.ts';
 import type { Safety } from '../types.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Constant-time token comparison.
+ *
+ * `===` on a secret leaks its prefix through timing, and this endpoint is
+ * reachable from the LAN whenever the token exists at all. Lengths are compared
+ * first because timingSafeEqual throws on a mismatch, and the length of a token
+ * is not the secret.
+ */
+function tokenMatches(expected: string, provided: unknown): boolean {
+  if (typeof provided !== 'string') return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(provided);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** Strip out values that are just the redaction mark coming back to us. */
+function dropMasked(patch: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (!patch || typeof patch !== 'object') return out;
+  for (const [key, value] of Object.entries(patch as Record<string, unknown>)) {
+    if (typeof value === 'string' && /^\u2022+$/.test(value)) continue;
+    out[key] = value;
+  }
+  return out;
+}
 
 export interface ServerDeps {
   db: Db;
@@ -33,12 +60,22 @@ export async function createServer(deps: ServerDeps) {
   const app = Fastify({ logger: false });
 
   // Loopback needs no auth; anything else must present the configured token.
+  //
+  // The token normally travels in a header. EventSource cannot set one, so
+  // /api/stream — and only /api/stream — also accepts it as a query parameter:
+  // query strings end up in proxy logs and Referer headers, so the exception is
+  // kept to the single endpoint that has no alternative.
   app.addHook('onRequest', async (req, reply) => {
     if (!cfg.token) return;
-    if (req.url.startsWith('/api')) {
-      const header = req.headers.authorization;
-      const token = header?.startsWith('Bearer ') ? header.slice(7) : (req.query as any)?.token;
-      if (token !== cfg.token) return reply.code(401).send({ error: 'unauthorized' });
+    if (!req.url.startsWith('/api')) return;
+
+    const header = req.headers.authorization;
+    const fromHeader = header?.startsWith('Bearer ') ? header.slice(7) : undefined;
+    const path = req.url.split('?')[0];
+    const fromQuery = path === '/api/stream' ? (req.query as any)?.token : undefined;
+
+    if (!tokenMatches(cfg.token, fromHeader ?? fromQuery)) {
+      return reply.code(401).send({ error: 'unauthorized' });
     }
   });
 
@@ -154,14 +191,22 @@ export async function createServer(deps: ServerDeps) {
     }
   });
 
-  app.get('/api/config', async () => ({ ...cfg, token: cfg.token ? '***' : null }));
+  app.get('/api/config', async () => redactConfig(cfg));
 
   app.patch('/api/config', async (req) => {
     const b = req.body as any;
     const allowed = ['plan', 'defaultSafety', 'defaultModel', 'reservePct', 'weeklyAnchor',
       'concurrency', 'notify', 'customCaps', 'subscriptionStartedAt', 'planPriceUsd'] as const;
     for (const key of allowed) {
-      if (key in b) (cfg as any)[key] = b[key];
+      if (!(key in b)) continue;
+      // GET hands back masked secrets, so a client that reads the config,
+      // edits one field and writes the whole thing back would otherwise save
+      // the mask over the real credential and silently break notifications.
+      if (key === 'notify') {
+        cfg.notify = { ...cfg.notify, ...dropMasked(b.notify) };
+        continue;
+      }
+      (cfg as any)[key] = b[key];
     }
     saveConfig(cfg);
     return { ok: true };

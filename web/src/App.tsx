@@ -84,6 +84,17 @@ function Worth({ value }: { value: ValueReport }) {
       <div className="sub" style={{ color: 'var(--dim)' }}>
         since {since}{value.sinceIsFirstTranscript ? ', your oldest transcript' : ''} · {money(value.thisWeekUsd)} this week
       </div>
+      {/*
+        Where Claude Code left its own total in a transcript we can check our
+        arithmetic against it. Showing the result — including that we land
+        under it — is the difference between a number and a claim.
+      */}
+      {value.reconciliation && (
+        <div className="sub" style={{ color: 'var(--dim)' }} title={`${money(value.reconciliation.ourUsd)} counted here against ${money(value.reconciliation.reportedUsd)} reported by Claude Code`}>
+          list prices, at {pct(value.reconciliation.ratio * 100)} of what Claude Code counts
+          {' '}on the {value.reconciliation.sessions} session{value.reconciliation.sessions === 1 ? '' : 's'} it reported
+        </div>
+      )}
     </div>
   );
 }
@@ -158,7 +169,13 @@ export default function App() {
         <span className="plan">{status.planLabel}</span>
         <Provenance status={status} onRefresh={refresh} />
         <div className="spacer" />
-        <span className={`live${live ? '' : ' stale'}`}><i />{live ? 'live' : 'reconnecting'}</span>
+        {/*
+          No "live" badge: a green light that is on every second it works says
+          nothing. The only state worth the space is the one where the numbers
+          on screen have stopped being current, which is exactly what this
+          dashboard exists not to do quietly.
+        */}
+        {live === false && <span className="live stale"><i />reconnecting</span>}
       </header>
 
       <section className="panel strip">

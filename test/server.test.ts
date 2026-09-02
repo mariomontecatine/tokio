@@ -1,7 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { openDb } from '../src/db.ts';
 import { loadConfig, type Config } from '../src/config.ts';
+
+// PATCH /api/config saves to disk, and configDir() reads XDG_CONFIG_HOME every
+// time, so point it at a throwaway directory before anything can write. Without
+// this the suite edits the config of whoever runs it.
+process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'tokio-test-config-'));
 import { createServer } from '../src/server/index.ts';
 import { Scheduler } from '../src/queue/scheduler.ts';
 import { createClaudeCodeProvider } from '../src/providers/claudeCode.ts';
@@ -26,13 +34,39 @@ test('with a token, the API refuses requests that lack it', async () => {
   await app.close();
 });
 
-test('the token is accepted as a header or as a query parameter', async () => {
+test('the token is accepted as a header', async () => {
   const { app } = await serverWith({ token: 'secret' });
   const header = await app.inject({ method: 'GET', url: '/api/status', headers: { authorization: 'Bearer secret' } });
   assert.equal(header.statusCode, 200);
-  // EventSource cannot set headers, so the query form has to work too.
-  const query = await app.inject({ method: 'GET', url: '/api/status?token=secret' });
-  assert.equal(query.statusCode, 200);
+  await app.close();
+});
+
+test('the query form of the token works only on the stream, which cannot send headers', async () => {
+  const { app } = await serverWith({ token: 'secret' });
+  // Query strings leak into proxy logs and Referer headers, so the exception is
+  // confined to the one endpoint EventSource forces it on.
+  const elsewhere = await app.inject({ method: 'GET', url: '/api/status?token=secret' });
+  assert.equal(elsewhere.statusCode, 401);
+  await app.close();
+});
+
+test('secrets are masked on the way out and a mask is never written back', async () => {
+  const { app } = await serverWith({ token: 'secret' });
+  const auth = { authorization: 'Bearer secret' };
+
+  const shown = (await app.inject({ method: 'GET', url: '/api/config', headers: auth })).json();
+  assert.notEqual(shown.token, 'secret');
+  assert.doesNotMatch(JSON.stringify(shown), /secret/, 'no credential survives redaction');
+
+  // Reading the config and writing it straight back must not save the mask
+  // over the real value.
+  await app.inject({
+    method: 'PATCH', url: '/api/config', headers: auth,
+    payload: { notify: { ...shown.notify, desktop: false } },
+  });
+  const after = (await app.inject({ method: 'GET', url: '/api/config', headers: auth })).json();
+  assert.equal(after.notify.desktop, false, 'the real edit lands');
+  assert.equal(after.notify.telegramToken, shown.notify.telegramToken, 'the masked one does not');
   await app.close();
 });
 

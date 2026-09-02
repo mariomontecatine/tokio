@@ -48,17 +48,24 @@ export function parseResetTime(text: string, now = Date.now()): number | null {
   return ts;
 }
 
-function line(text: string, label: RegExp): { pct: number | null; resetsAt: number | null } {
+function line(text: string, label: RegExp, now: number): { pct: number | null; resetsAt: number | null } {
   const m = label.exec(text);
   if (!m) return { pct: null, resetsAt: null };
-  return { pct: Number(m[1]), resetsAt: parseResetTime(m[2] ?? '') };
+  return { pct: Number(m[1]), resetsAt: parseResetTime(m[2] ?? '', now) };
 }
 
-/** Pull the real percentages out of what `claude -p "/usage"` prints. */
-export function parseUsageText(text: string): Omit<UsageProbe, 'at' | 'error'> {
-  const session = line(text, /Current session:\s*(\d+(?:\.\d+)?)%\s*used\s*·?\s*resets\s*([^\n]*)/i);
-  const week = line(text, /Current week\s*\(all models\):\s*(\d+(?:\.\d+)?)%\s*used\s*·?\s*resets\s*([^\n]*)/i);
-  const opus = line(text, /Current week\s*\(Opus[^)]*\):\s*(\d+(?:\.\d+)?)%\s*used\s*·?\s*resets\s*([^\n]*)/i);
+/**
+ * Pull the real percentages out of what `claude -p "/usage"` prints.
+ *
+ * `now` is threaded through rather than read from the clock inside, because the
+ * reset times carry no year and are only meaningful relative to some instant —
+ * which also means a test can pin one instead of expiring the day after it was
+ * written.
+ */
+export function parseUsageText(text: string, now = Date.now()): Omit<UsageProbe, 'at' | 'error'> {
+  const session = line(text, /Current session:\s*(\d+(?:\.\d+)?)%\s*used\s*·?\s*resets\s*([^\n]*)/i, now);
+  const week = line(text, /Current week\s*\(all models\):\s*(\d+(?:\.\d+)?)%\s*used\s*·?\s*resets\s*([^\n]*)/i, now);
+  const opus = line(text, /Current week\s*\(Opus[^)]*\):\s*(\d+(?:\.\d+)?)%\s*used\s*·?\s*resets\s*([^\n]*)/i, now);
   return {
     sessionPct: session.pct,
     sessionResetsAt: session.resetsAt,

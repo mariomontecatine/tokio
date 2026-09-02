@@ -28,6 +28,7 @@ export interface ValueReport {
   thisWeekUsd: number;
   thisBlockUsd: number;
   byMonth: { month: string; usd: number }[];
+  reconciliation: { sessions: number; reportedUsd: number; ourUsd: number; ratio: number } | null;
 }
 
 export interface WindowStatus {
@@ -140,7 +141,9 @@ export const api = {
 export function useDashboard() {
   const [status, setStatus] = useState<Status | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [live, setLive] = useState(false);
+  // Null until the event stream has said something either way. Starting at
+  // `false` would flash a "reconnecting" warning on every fresh load.
+  const [live, setLive] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
 

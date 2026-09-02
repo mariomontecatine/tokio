@@ -13,8 +13,16 @@ Approximate, based on local sessions on this machine — does not include other 
 Last 24h · 139 requests · 3 sessions
   43% of your usage was at >150k context`;
 
+/**
+ * The instant this capture was taken. Pinned on purpose: the reset times in
+ * `/usage` carry no year, so they only mean anything relative to a "now", and a
+ * test that used the wall clock would pass the day it was written and start
+ * failing the day after.
+ */
+const CAPTURED_AT = Date.parse('2026-08-31T22:00:00Z');
+
 test('it reads the real percentages and resets out of /usage', () => {
-  const p = parseUsageText(REAL);
+  const p = parseUsageText(REAL, CAPTURED_AT);
   assert.equal(p.sessionPct, 69);
   assert.equal(p.weekPct, 27);
   assert.equal(p.opusPct, null, 'this plan reports no separate Opus allowance');
@@ -23,7 +31,7 @@ test('it reads the real percentages and resets out of /usage', () => {
 });
 
 test('an Opus allowance is picked up when the plan has one', () => {
-  const p = parseUsageText(`${REAL}\nCurrent week (Opus): 41% used · resets Sep 5, 8:59pm (Europe/Madrid)`);
+  const p = parseUsageText(`${REAL}\nCurrent week (Opus): 41% used · resets Sep 5, 8:59pm (Europe/Madrid)`, CAPTURED_AT);
   assert.equal(p.opusPct, 41);
 });
 
