@@ -41,23 +41,36 @@ eso no lo responde nadie.
 ## Empezar
 
 ```bash
-git clone https://github.com/mariomontecatine/tokio
-cd tokio
-npm install && npm run build
-npm link              # deja `tokio` en el PATH
+curl -fsSL https://raw.githubusercontent.com/mariomontecatine/tokio/main/install.sh | sh
+```
 
+Eso comprueba tu Node, se descarga tokio en `~/.tokio`, lo compila y deja el
+comando `tokio` en `~/.local/bin`. A partir de ahí, desde cualquier carpeta:
+
+```bash
 tokio                 # abre el panel, arrancando el daemon si no lo estaba
 tokio status          # solo los números, sin necesidad de daemon
 ```
 
-El `npm link` es lo que deja `tokio` en tu PATH, así que funciona desde
-cualquier carpeta, igual que `claude`. Escribir `tokio` en cualquier sitio
-arranca el daemon si no está en marcha y abre el panel en tu navegador; si lo
-vuelves a ejecutar más tarde va directo a la página que ya se está sirviendo, en
-vez de fallar por el puerto ocupado.
+Escribir `tokio` en cualquier sitio arranca el daemon si no está en marcha y
+abre el panel en tu navegador; si lo vuelves a ejecutar más tarde va directo a
+la página que ya se está sirviendo, en vez de fallar por el puerto ocupado.
+Añade `--no-open` para el daemon sin navegador, y usa `tokio start` en una
+unidad de servicio: esa forma nunca abre nada.
 
-Añade `--no-open` si quieres el daemon sin navegador, y usa `tokio start` en una
-unidad de servicio: esa forma nunca intenta abrir nada.
+Para actualizar, vuelve a ejecutar la misma línea: se actualiza y recompila en
+el sitio. Para desinstalar: `rm -rf ~/.tokio ~/.local/bin/tokio`.
+
+<details>
+<summary>Desde el código, si lo prefieres</summary>
+
+```bash
+git clone https://github.com/mariomontecatine/tokio
+cd tokio
+npm install && npm run build
+npm link
+```
+</details>
 
 No hay nada que configurar ni cuenta que crear. `tokio` lee los transcripts que Claude Code ya
 escribe en `~/.claude/projects/`, así que tu historial entero está ahí desde la primera ejecución.
@@ -90,19 +103,18 @@ Cierra el portátil.
 -->
 
 ```
-  Plan: Max 5×  (estimated cap — run "tokio calibrate <pct>")
+  Plan: Pro  (read from your Claude account)  (reported by Claude Code)
 
-  5h window  █████░░░░░░░░░░░░░░░░░░░  21%   $26.69 of $125.00
+  5h window  █████░░░░░░░░░░░░░░░░░░░  21%   $1.15 of $5.40
              resets at 11:00 PM
-  Week       ██░░░░░░░░░░░░░░░░░░░░░░   8%   $84.92 of $1000.00
-  Week Opus  ████████░░░░░░░░░░░░░░░░  34%   $84.75 of $250.00
+  Week       ██░░░░░░░░░░░░░░░░░░░░░░   8%   $3.60 of $45.00
 
-  Burning $50.63/h — window runs dry around 10:53 PM
-  Worth $389.84 at API prices for $102.35 paid — 3.8× your subscription
+  Burning $2.10/h — the window resets before you run dry
+  Worth 12.4× your subscription over the last 30 days
 
   Queue (2):
-    972dab44  queued    ~$1.80  comprueba que los tests de meter pasan y arreg
-    79ed7209  queued    ~$0.90  prueba rapida
+    972dab44  queued    ~$0.40  finish the parser tests
+    79ed7209  queued    ~$0.15  tidy the changelog
 ```
 
 El panel dibuja lo mismo como un solo gráfico: la ventana como una tira de registro, donde la
@@ -120,14 +132,14 @@ pasada la línea del reset son los trabajos esperando a la siguiente ventana.
 ```
 $ tokio value
 
-  Since 1/8/2026 (your oldest transcript)
+  Last 30 days
 
-  Run on the API this would have cost       $389.84
-  Subscription over the same period         $102.35  (31 days at $100.00/month)
-  So the plan is paying back                   3.8×
+  Run on the API this would have cost       $248.10
+  Subscription for those 30 days             $20.00  ($20.00/month)
+  So the plan is paying back                  12.4×
 
-  Last 7 days   $77.47
-  Last 5 hours  $15.89
+  Today 18.2×   ·   Yesterday 7.5×   ·   7 days 11.0×
+  Last 5 hours  $3.90
 ```
 
 Cada respuesta que has recibido está en los transcripts, y cada una tiene un precio. Sumándolas
@@ -235,9 +247,10 @@ Anthropic no publica el tamaño de la ventana de cada plan, así que **los topes
 [`src/plans/profiles.json`](src/plans/profiles.json) son estimaciones**. `tokio` lo dice en todos
 los sitios donde enseña uno, y nunca disfraza una suposición de medición.
 
-El dato de 5 h del Max 5× al menos está medido: una cuenta real leyó un 44% en `/usage` contra
-$35,99 de gasto contado, lo que deja esa ventana en unos $82. Pro y Max 20× son ese número
-escalado por precio, y todas las cifras semanales siguen siendo suposiciones.
+En la práctica casi nunca se usan: en cuanto `/usage` devuelve un porcentaje real —lo que ocurre
+de inmediato si has iniciado sesión con una suscripción— el tope se deduce de ahí y las
+estimaciones dejan de pintarse. Solo importan a quien usa una clave de API, que no recibe ningún
+porcentaje.
 
 Arreglarlo cuesta diez segundos. Ejecuta `/usage` dentro de Claude Code, mira el porcentaje y
 díselo:
@@ -260,6 +273,39 @@ tokio calibrate 15 --window week
 Con una lectura por ventana basta; con varias aguanta mejor el redondeo de ese porcentaje. Además, cualquier
 límite con el que `tokio` choque de verdad queda registrado como cota inferior y sube la
 estimación. La cabecera te dice en todo momento cuál de las dos cosas estás viendo.
+
+### Qué plan tienes
+
+Se lee de tu cuenta de Claude: ni se pregunta ni se supone. Claude Code guarda en `.claude.json`
+el perfil que le devuelve Anthropic, y el plan está ahí — `organizationType` dice Pro o Max, y
+`organizationRateLimitTier` es lo que separa Max 5× de Max 20×. Son los dos mismos campos que usa
+el propio Claude Code para distinguirlos.
+
+Importa porque el precio del plan es el divisor de toda la rentabilidad: leer una cuenta Pro como
+Max 5× dividiría por cinco lo que en realidad te está devolviendo la suscripción.
+
+Tres reglas lo mantienen honesto:
+
+- **Un plan que pongas a mano no lo pisa nunca la detección.** El `plan` de tu configuración manda.
+- **Team, Enterprise y un Max sin precisar se dejan como desconocidos**, porque los dos planes Max
+  se diferencian a la mitad en precio y en límites, y adivinar pondría un precio equivocado debajo
+  de todo lo demás.
+- **Un plan desconocido no produce ninguna rentabilidad**, en vez de una plausible. Los medidores
+  siguen funcionando: salen de los porcentajes de Anthropic y nunca necesitaron el plan.
+
+No sale nada a ninguna parte: es la lectura de un fichero que ya tienes, y no se toma nada de él
+salvo el plan.
+
+### Dónde funciona
+
+| | Daemon y CLI | Instalación de una línea | Te abre el navegador | Notificaciones de escritorio |
+|---|---|---|---|---|
+| Linux | sí | sí | `xdg-open` | `notify-send` |
+| macOS | sí | sí | `open` | `osascript` |
+| WSL | sí | sí | `wslview`, si no `explorer.exe` | aviso de Windows |
+| Windows | sí | usa los pasos desde el código | `start` | aviso de Windows |
+
+Lo que no pueda hacer, lo dice e imprime la URL en vez de fallar.
 
 ## Seguridad
 
@@ -344,7 +390,7 @@ Opciones de `add`:
 
 | Clave | Por defecto | |
 |---|---|---|
-| `plan` | `max5` | `pro`, `max5`, `max20`, `custom` |
+| `plan` | `auto` | Se lee de tu cuenta de Claude. Puedes forzar `pro`, `max5`, `max20` o `custom` |
 | `subscriptionStartedAt` | `null` | `"2026-05-14"` — desde cuándo pagas, para `tokio value` |
 | `planPriceUsd` | `null` | Cambia el precio mensual (precio regional, asiento de equipo) |
 | `reservePct` | `10` | Cuánto de la ventana te guardas |
@@ -427,11 +473,19 @@ escucha solo en loopback salvo que lo cambies a propósito.
       interfaz [`Provider`](src/providers/types.ts) que ya existe
 - [ ] Codex CLI de OpenAI, para quien tenga la suscripción de ese lado
 - [ ] Trabajos encadenados — "si este pasa, lanza el siguiente"
+- [ ] **Suspender cuando la cola se vacíe.** Dejas trabajo encolado de noche y el equipo duerme en
+      vez de estar encendido sin hacer nada. La restricción es todo el diseño: solo puede
+      dispararse con la cola *completamente* vacía —nada corriendo, encolado, diferido ni
+      programado—, porque dormir tras el primero de tres trabajos deja los otros dos sin
+      ejecutarse, que es justo lo contrario de encolarlos. Apagado por defecto, con cuenta atrás
+      cancelable, y nunca con un trabajo escribiendo. La versión que merece la pena lo combina con
+      un despertador RTC a la hora del reset: duerme, se despierta cuando se abre la ventana, vacía
+      la cola y se vuelve a dormir; eso pide root en casi todos los sistemas.
 
 ## Desarrollo
 
 ```bash
-npm test          # 40 tests, sin gastar tokens: el ejecutor corre contra un CLI falso
+npm test          # 108 tests, sin gastar tokens: el ejecutor corre contra un CLI falso
 npm run dev       # daemon desde el código, sin compilar
 npm run dev:web   # panel con recarga en caliente
 ```

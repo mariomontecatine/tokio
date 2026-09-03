@@ -41,22 +41,36 @@ answers it.
 ## Quickstart
 
 ```bash
-git clone https://github.com/mariomontecatine/tokio
-cd tokio
-npm install && npm run build
-npm link              # puts `tokio` on your PATH
+curl -fsSL https://raw.githubusercontent.com/mariomontecatine/tokio/main/install.sh | sh
+```
 
+That checks your Node, fetches tokio into `~/.tokio`, builds it, and puts a
+`tokio` command in `~/.local/bin`. Then, from any directory:
+
+```bash
 tokio                 # opens the dashboard, starting the daemon if it isn't up
 tokio status          # just the numbers, no daemon needed
 ```
 
-`npm link` is what puts `tokio` on your PATH, so it works from any directory,
-the way `claude` does. Typing `tokio` anywhere starts the daemon if it isn't
-running and opens the dashboard in your browser; run it again later and it goes
-straight to the page already being served instead of failing on a busy port.
+Typing `tokio` anywhere starts the daemon if it isn't running and opens the
+dashboard in your browser; run it again later and it goes straight to the page
+already being served instead of failing on a busy port. Add `--no-open` for the
+daemon without the browser, and use `tokio start` in a service unit — that form
+never opens anything.
 
-Add `--no-open` if you want the daemon without the browser, and use `tokio
-start` in a service unit — that form never tries to open anything.
+Run the same one-liner again to update; it pulls and rebuilds in place. To
+remove it: `rm -rf ~/.tokio ~/.local/bin/tokio`.
+
+<details>
+<summary>From source instead</summary>
+
+```bash
+git clone https://github.com/mariomontecatine/tokio
+cd tokio
+npm install && npm run build
+npm link
+```
+</details>
 
 There's nothing to configure and no account to make. `tokio` reads the transcripts Claude Code
 already writes to `~/.claude/projects/`, so your entire history is there on first run.
@@ -89,19 +103,18 @@ Close the laptop.
 -->
 
 ```
-  Plan: Max 5×  (estimated cap — run "tokio calibrate <pct>")
+  Plan: Pro  (read from your Claude account)  (reported by Claude Code)
 
-  5h window  █████░░░░░░░░░░░░░░░░░░░  21%   $26.69 of $125.00
+  5h window  █████░░░░░░░░░░░░░░░░░░░  21%   $1.15 of $5.40
              resets at 11:00 PM
-  Week       ██░░░░░░░░░░░░░░░░░░░░░░   8%   $84.92 of $1000.00
-  Week Opus  ████████░░░░░░░░░░░░░░░░  34%   $84.75 of $250.00
+  Week       ██░░░░░░░░░░░░░░░░░░░░░░   8%   $3.60 of $45.00
 
-  Burning $50.63/h — window runs dry around 10:53 PM
-  Worth $389.84 at API prices for $102.35 paid — 3.8× your subscription
+  Burning $2.10/h — the window resets before you run dry
+  Worth 12.4× your subscription over the last 30 days
 
   Queue (2):
-    972dab44  queued    ~$1.80  comprueba que los tests de meter pasan y arreg
-    79ed7209  queued    ~$0.90  prueba rapida
+    972dab44  queued    ~$0.40  finish the parser tests
+    79ed7209  queued    ~$0.15  tidy the changelog
 ```
 
 The dashboard draws the same thing as one chart — the window as a strip recorder, where the
@@ -132,14 +145,14 @@ blocks past the reset rule are the jobs waiting to run in the next window:
 ```
 $ tokio value
 
-  Since 1/8/2026 (your oldest transcript)
+  Last 30 days
 
-  Run on the API this would have cost       $389.84
-  Subscription over the same period         $102.35  (31 days at $100.00/month)
-  So the plan is paying back                   3.8×
+  Run on the API this would have cost       $248.10
+  Subscription for those 30 days             $20.00  ($20.00/month)
+  So the plan is paying back                  12.4×
 
-  Last 7 days   $77.47
-  Last 5 hours  $15.89
+  Today 18.2×   ·   Yesterday 7.5×   ·   7 days 11.0×
+  Last 5 hours  $3.90
 ```
 
 Every assistant response you've ever had is in the transcripts, and every one of them has a
@@ -283,6 +296,38 @@ tokio calibrate 15 --window week
 It also treats any limit it *actually hits* as a hard lower bound. The header always tells you
 which of the three you're looking at: reported, calibrated, or estimated.
 
+### Which plan you're on
+
+Read from your Claude account, not asked for and not assumed. Claude Code stores the profile it
+fetched from Anthropic in `.claude.json`, and the plan is in there — `organizationType` says Pro
+or Max, and `organizationRateLimitTier` is what separates Max 5× from Max 20×. That is the same
+pair of fields Claude Code itself uses to tell them apart.
+
+It matters because the plan's price is the denominator of every payback figure: reading a Pro
+account as Max 5× would understate what the subscription returned by five times.
+
+Three rules keep it honest:
+
+- **A plan you set by hand is never overridden.** `plan` in your config beats detection.
+- **Team, Enterprise and an unqualified Max are left undetermined**, because the two Max plans
+  differ by half in both price and limits and guessing would put a wrong price under everything.
+- **An undetermined plan produces no payback at all**, rather than a plausible one. The gauges
+  still work — they come from Anthropic's own percentages and never needed the plan.
+
+Nothing is sent anywhere; it is a read of a file you already have, and nothing but the plan is
+taken from it.
+
+### Where it runs
+
+| | Daemon and CLI | One-line install | Opens your browser | Desktop notifications |
+|---|---|---|---|---|
+| Linux | yes | yes | `xdg-open` | `notify-send` |
+| macOS | yes | yes | `open` | `osascript` |
+| WSL | yes | yes | `wslview`, else `explorer.exe` | Windows toast |
+| Windows | yes | use the from-source steps | `start` | Windows toast |
+
+Anything it cannot do, it says so and prints the URL instead of failing.
+
 ## Safety
 
 Queued jobs run while you're not there. That's the whole point, and it's also the risk, so you
@@ -365,7 +410,7 @@ Options for `add`:
 
 | Key | Default | |
 |---|---|---|
-| `plan` | `max5` | `pro`, `max5`, `max20`, `custom` |
+| `plan` | `auto` | Read from your Claude account. Override with `pro`, `max5`, `max20` or `custom` |
 | `subscriptionStartedAt` | `null` | `"2026-05-14"` — when you started paying, for `tokio value` |
 | `planPriceUsd` | `null` | Override the monthly price (regional pricing, a team seat) |
 | `reservePct` | `10` | How much of the window to keep for yourself |
@@ -461,11 +506,18 @@ to loopback unless you deliberately change it. Details in
       [`Provider`](src/providers/types.ts) interface
 - [ ] OpenAI Codex CLI, for people whose subscription is on that side
 - [ ] Chained jobs — "if this one passes, run that one"
+- [ ] **Suspend when the queue drains.** Queue work overnight, let the machine sleep instead of
+      idling. The constraint is the whole design: it may only fire when the queue is *completely*
+      empty — nothing running, queued, deferred or scheduled — because sleeping after the first of
+      three jobs means the other two never run, which defeats the point of queueing them. Off by
+      default, with a countdown you can cancel, and never while a job is mid-write. The version
+      worth building pairs it with an RTC wake for the reset time, so the machine sleeps, wakes
+      when the window reopens, drains the queue and sleeps again; that needs root on most systems.
 
 ## Development
 
 ```bash
-npm test          # 40 tests, no tokens spent: the executor runs against a fake CLI
+npm test          # 108 tests, no tokens spent: the executor runs against a fake CLI
 npm run dev       # daemon from source, no build step
 npm run dev:web   # dashboard with hot reload, proxying to the daemon
 ```
