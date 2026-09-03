@@ -1,24 +1,106 @@
-import { useState } from 'react';
-import { api, useDashboard, type Status, type ValueReport } from './api';
+import { useEffect, useState } from 'react';
+import { api, useDashboard, type PeriodName, type Status, type ValueReport } from './api';
+import { Ring, pressureOf, type Pressure } from './Ring';
 import { WindowStrip } from './WindowStrip';
 import { Compose } from './Compose';
 import { Queue } from './Queue';
+import { Reveal } from './Reveal';
+import { Countdown } from './Countdown';
+import { Heatmap } from './Heatmap';
+import { Expand } from './Expand';
 import { clock, money, pct, until } from './format';
-import { useState as useReactState } from 'react';
+import { useLang, localeOf, type Lang, type Translate } from './i18n';
+import { startSmoothScroll } from './smoothScroll';
+
+const HOUR = 3_600_000;
+
+/** "10 sep" — enough to place a reset without spelling out a whole date. */
+const dayMonth = (at: number, lang: Lang): string =>
+  new Date(at).toLocaleDateString(localeOf(lang), { day: 'numeric', month: 'short' }).replace('.', '');
 
 /**
- * Where the percentages came from, and the button that goes and gets them again.
+ * "9–24", "≤3" when even one expensive turn would not fit, or a single figure
+ * when both ends agree.
  *
- * Reading Claude Code's own `/usage` is free and takes a few seconds, so the
- * honest thing is to show its age and let anyone demand a fresh one rather than
- * quietly serving a number from twenty minutes ago.
+ * A range, not one number: a turn's cost varies by an order of magnitude with
+ * what you ask for, and a single figure would hide that. The low end assumes
+ * expensive turns, the high end typical ones.
  */
-function Provenance({ status, onRefresh }: { status: Status; onRefresh: () => void }) {
-  const [busy, setBusy] = useReactState(false);
+function turnCount(few: number, many: number): string {
+  if (few >= many) return String(many);
+  if (few <= 0) return `≤${many}`;
+  return `${few}–${many}`;
+}
+
+interface Verdict {
+  line: string;
+  detail: string | null;
+  pressure: Pressure;
+  /** Where this pace lands by the reset, for the ring's second arc. */
+  projectedPct: number | null;
+}
+
+/**
+ * Do I make it to the reset?
+ *
+ * The whole tool exists because that question used to be answerable only by
+ * cross-reading a percentage, a burn rate and a clock. It is one sentence, and
+ * it is the first thing on the page.
+ */
+function readVerdict(status: Status, t: Translate): Verdict {
+  const { block, burnRate, now, exhaustionAt } = status;
+  const cap = block.cap.credits;
+
+  if (burnRate <= 0 || cap <= 0) {
+    // Idle: the useful thing is not how many dollars are left — nobody buys
+    // dollars — but how much more work fits. Counted in your own prompts, with
+    // the percentage as the fallback when there is too little history to say.
+    const room = status.headroom;
+    const line =
+      room === null
+        ? t('verdict.idle.pct', { pct: pct(100 - block.usedPct) })
+        : room.many <= 0
+          ? t('verdict.idle.none')
+          : t('verdict.idle.turns', { count: turnCount(room.few, room.many) });
+    return { line, detail: null, pressure: pressureOf(block.usedPct), projectedPct: null };
+  }
+
+  const hoursLeft = Math.max(0, (block.resetsAt - now) / HOUR);
+  const projectedPct = ((block.window.credits + burnRate * hoursLeft) / cap) * 100;
+
+  if (exhaustionAt && exhaustionAt < block.resetsAt) {
+    return {
+      line: t('verdict.dry', { time: clock(exhaustionAt) }),
+      detail: t('verdict.dry.detail', { until: until(block.resetsAt, exhaustionAt) }),
+      pressure: 'over',
+      projectedPct,
+    };
+  }
+  if (projectedPct >= 65) {
+    return {
+      line: t('verdict.tight'),
+      detail: t('verdict.tight.detail', { pct: pct(projectedPct) }),
+      pressure: 'tight',
+      projectedPct,
+    };
+  }
+  return {
+    line: t('verdict.clear'),
+    detail: t('verdict.clear.detail', { pct: pct(projectedPct) }),
+    pressure: 'ease',
+    projectedPct,
+  };
+}
+
+/** Everything true but not urgent. Present, one click away, never in the way. */
+function Details({ status, t, lang, onRefresh }: { status: Status; t: Translate; lang: Lang; onRefresh: () => void }) {
+  const [busy, setBusy] = useState(false);
   const reported = status.block.source === 'reported';
   const age = status.probe ? Math.round(status.probe.ageMs / 1000) : null;
+  const ageLabel = age === null ? '—' : age < 90 ? `${age}s` : `${Math.round(age / 60)}m`;
+  const worth = status.value;
 
-  async function run() {
+  async function reread() {
     setBusy(true);
     try {
       await api.refresh();
@@ -29,231 +111,316 @@ function Provenance({ status, onRefresh }: { status: Status; onRefresh: () => vo
   }
 
   return (
-    <>
-      <span className="plan" style={{ color: reported ? 'var(--spent)' : 'var(--queued)' }}>
-        {reported ? 'reported by Claude Code' : 'estimated'}
-      </span>
-      <button className="btn ghost refresh" onClick={run} disabled={busy} title="Re-read /usage">
-        {busy ? 'reading…' : age === null ? 'read /usage' : age < 90 ? `${age}s ago` : `${Math.round(age / 60)}m ago`}
-        <span aria-hidden="true"> ↻</span>
-      </button>
-      {status.probe?.error && <span className="plan" style={{ color: 'var(--over)' }}>{status.probe.error}</span>}
-    </>
+    <div className="details">
+      <dl className="facts">
+        <div>
+          <dt>{t('detail.source')}</dt>
+          <dd>
+            {reported ? t('detail.source.reported') : t('detail.source.estimated')}
+            {age !== null && <> · {t('detail.readAge', { age: ageLabel })}</>}
+            {' '}
+            <button className="link" onClick={reread} disabled={busy}>
+              {busy ? t('detail.rereading') : t('detail.reread')}
+            </button>
+          </dd>
+        </div>
+        <div>
+          <dt>{t('detail.remaining')}</dt>
+          <dd>{money(status.block.remainingCredits)} {t('detail.of', { total: money(status.block.cap.credits) })}</dd>
+        </div>
+        {status.headroom && (
+          <div>
+            <dt>{t('detail.turnsLeft')}</dt>
+            <dd>
+              {t('detail.turnsLeft.value', {
+                count: turnCount(status.headroom.few, status.headroom.many),
+                p50: money(status.headroom.turnP50),
+                p90: money(status.headroom.turnP90),
+                n: status.headroom.sample,
+              })}
+            </dd>
+          </div>
+        )}
+        <div>
+          <dt>{t('detail.burn')}</dt>
+          <dd>{status.burnRate > 0 ? `${money(status.burnRate)}/h` : '—'}</dd>
+        </div>
+        <div>
+          <dt>{t('detail.reserve')}</dt>
+          <dd>{pct(status.reservePct)} — {t('detail.reserve.help')}</dd>
+        </div>
+        {status.accuracy.n >= 3 && (
+          <div>
+            <dt>{t('detail.accuracy')}</dt>
+            <dd>{t('detail.accuracy.value', { pct: pct(status.accuracy.withinP90 * 100) })}</dd>
+          </div>
+        )}
+        {status.weekOpus && (
+          <div>
+            <dt>{t('detail.opus')}</dt>
+            <dd>{pct(status.weekOpus.usedPct)} · {money(status.weekOpus.window.opusCredits)} / {money(status.weekOpus.cap.credits)}</dd>
+          </div>
+        )}
+        {worth.reconciliation && (
+          <div>
+            <dt>{t('detail.reconciliation')}</dt>
+            <dd>
+              {t('detail.reconciliation.value', {
+                ours: money(worth.reconciliation.ourUsd),
+                theirs: money(worth.reconciliation.reportedUsd),
+                n: worth.reconciliation.sessions,
+              })}
+            </dd>
+          </div>
+        )}
+        <div>
+          <dt>{t('detail.plan')}</dt>
+          <dd>
+            {status.planLabel}
+            {' · '}
+            {status.planBasis === 'detected'
+              ? t('detail.plan.detected', { evidence: status.plan })
+              : status.planBasis === 'configured'
+                ? t('detail.plan.configured')
+                : t('detail.plan.unknown')}
+          </dd>
+        </div>
+        <div>
+          <dt>{t('detail.period')}</dt>
+          <dd>
+            {t(worth.sinceIsFirstTranscript ? 'detail.period.transcript' : 'detail.period.configured', {
+              since: new Date(worth.since).toLocaleDateString(localeOf(lang), { day: 'numeric', month: 'long' }),
+            })}
+          </dd>
+        </div>
+        {worth.byMonth.length > 0 && (
+          <div>
+            <dt>{t('detail.month')}</dt>
+            <dd>{worth.byMonth.slice(0, 4).map((m) => `${m.month} ${money(m.usd)}`).join(' · ')}</dd>
+          </div>
+        )}
+      </dl>
+      {/* Not a footnote for its own sake: every figure above is a counterfactual
+          at list prices, and the page should never let that be forgotten. */}
+      <p className="details-note">{t('detail.prices')}</p>
+    </div>
   );
 }
 
-function Gauge({ name, used, total, usedPct, sub, color }: {
-  name: string; used: number; total: number; usedPct: number; sub: string; color: string;
-}) {
+/** Only shown while the cap is still a guess — which is exactly when it matters. */
+function Calibration({ status, t, onDone }: { status: Status; t: Translate; onDone: () => void }) {
+  const [value, setValue] = useState('');
+  const [saved, setSaved] = useState<number | null>(null);
+
+  if (status.block.source === 'reported') return null;
+  if (status.block.cap.basis === 'calibrated' && saved === null) return null;
+
+  if (saved !== null) {
+    return <p className="notice">{t('calibrate.done', { amount: money(saved) })}</p>;
+  }
+
   return (
-    <div className="gauge">
-      <div className="gauge-top">
-        <span className="name">{name}</span>
-        <span className="pct" style={{ color: usedPct > 90 ? 'var(--over)' : undefined }}>{pct(usedPct)}</span>
+    <div className="notice">
+      <div>
+        <strong>{t('calibrate.title')}</strong>
+        <span>{t('calibrate.help')}</span>
       </div>
-      <div className="track">
-        <span style={{ width: `${Math.min(100, usedPct)}%`, background: color }} />
+      <div className="notice-action">
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="63"
+          inputMode="numeric"
+          aria-label={t('calibrate.title')}
+        />
+        <button
+          className="btn"
+          disabled={!value}
+          onClick={() => void api.calibrate('block', Number(value)).then((r) => { setSaved(r.impliedCap); onDone(); })}
+        >
+          {t('calibrate.action')}
+        </button>
       </div>
-      <div className="sub">{money(used)} of {money(total)} · {sub}</div>
     </div>
   );
 }
 
 /**
- * What the subscription has returned.
+ * What the subscription returned.
  *
- * The multiple leads because it is the number that answers "is this worth it".
- * The provenance line is not fine print: this counts one machine's transcripts
- * at list prices, and saying so is what makes the headline trustworthy.
+ * The second figure is the fee, not a bill — and it read as one: "for $105
+ * paid" next to a usage total looks like money you were charged on top. Naming
+ * it as the subscription and showing the arithmetic behind it (32 days at
+ * $100/month) makes it checkable at a glance instead of alarming.
  */
-function Worth({ value }: { value: ValueReport }) {
-  if (value.multiple === null) return null;
-  const since = new Date(value.since).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+/**
+ * No all-time figure. Claude Code keeps transcripts for thirty days, so "since
+ * the beginning" is a month for almost everyone — the same month the headline
+ * already reports, dressed up as a longer view. Two numbers that differ only by
+ * rounding, one of them implying a history nobody has.
+ */
+function Worth({ value, t, lang }: { value: ValueReport; t: Translate; lang: Lang }) {
+  const month = value.periods.month;
 
   return (
-    <div className="gauge worth">
-      <div className="gauge-top">
-        <span className="name">subscription payback</span>
-      </div>
-      <div className="worth-figure">
-        {value.multiple.toFixed(1)}<span className="x">×</span>
-      </div>
-      <div className="sub">
-        {money(value.equivalentUsd)} of API usage for {money(value.paidUsd!)} paid
-      </div>
-      <div className="sub" style={{ color: 'var(--dim)' }}>
-        since {since}{value.sinceIsFirstTranscript ? ', your oldest transcript' : ''} · {money(value.thisWeekUsd)} this week
-      </div>
-      {/*
-        Where Claude Code left its own total in a transcript we can check our
-        arithmetic against it. Showing the result — including that we land
-        under it — is the difference between a number and a claim.
-      */}
-      {value.reconciliation && (
-        <div className="sub" style={{ color: 'var(--dim)' }} title={`${money(value.reconciliation.ourUsd)} counted here against ${money(value.reconciliation.reportedUsd)} reported by Claude Code`}>
-          list prices, at {pct(value.reconciliation.ratio * 100)} of what Claude Code counts
-          {' '}on the {value.reconciliation.sessions} session{value.reconciliation.sessions === 1 ? '' : 's'} it reported
+    <section className="block worth">
+      <header className="block-head">
+        <h2>{t('worth.title')}</h2>
+      </header>
+      {/* Thirty days leads, not the whole history. The all-time figure keeps
+          stretching over months you may barely have used, so it answers "has it
+          been worth it ever" — a duller question than "is it worth it now". */}
+      {month.multiple === null || month.paidUsd === null ? (
+        <p className="block-empty">{t('worth.unknown')}</p>
+      ) : (
+        <div className="worth-body">
+          <div className="worth-figure">
+            {month.multiple.toFixed(1)}<span>×</span>
+          </div>
+          <p className="worth-line">
+            {t('worth.line', {
+              used: money(month.usd),
+              paid: money(month.paidUsd),
+              rate: value.monthlyUsd === null ? '—' : money(value.monthlyUsd),
+            })}
+          </p>
         </div>
       )}
-    </div>
-  );
-}
 
-function Calibration({ status, onDone }: { status: Status; onDone: () => void }) {
-  const [value, setValue] = useState('');
-  const [saved, setSaved] = useState<number | null>(null);
+      {/* The headline says how much the plan returned; these say when. A single
+          all-time figure cannot tell steady use from three heroic afternoons. */}
+      <dl className="periods">
+        {(['today', 'yesterday', 'week'] as PeriodName[]).map((name) => {
+          const period = value.periods[name];
+          return (
+            <div key={name}>
+              <dt>{t(`worth.${name}`)}</dt>
+              <dd title={`${money(period.usd)} ${period.paidUsd === null ? '' : `/ ${money(period.paidUsd)}`}`}>
+                {period.multiple === null || period.usd <= 0
+                  ? <span className="quiet">{t('worth.period.none')}</span>
+                  : <>{period.multiple.toFixed(1)}<span>×</span></>}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
 
-  // Nothing to calibrate while Claude Code is telling us the real number.
-  if (status.block.source === 'reported') return null;
-  if (status.block.cap.basis === 'calibrated' && saved === null) return null;
-
-  return (
-    <div className="notice">
-      {saved !== null ? (
-        <span>Got it — your 5-hour window holds about <b>{money(saved)}</b>. Numbers above are now yours, not an estimate.</span>
-      ) : (
-        <>
-          <span>
-            <b style={{ color: 'var(--text)' }}>These limits are a guess.</b> Anthropic doesn't publish them.
-            Run <code>/usage</code> in Claude Code and type the 5-hour percentage it shows you.
-          </span>
-          <div className="spacer" />
-          <input
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="63"
-            inputMode="numeric"
-            aria-label="Percentage Claude Code reports for the 5-hour window"
-          />
-          <button
-            className="btn"
-            onClick={() =>
-              void api.calibrate('block', Number(value)).then((r) => {
-                setSaved(r.impliedCap);
-                onDone();
-              })
-            }
-            disabled={!value}
-          >
-            Set it
-          </button>
-        </>
-      )}
-    </div>
+      <Heatmap byDay={value.byDay} dailyUsd={value.dailyUsd} t={t} lang={lang} />
+    </section>
   );
 }
 
 export default function App() {
   const { status, jobs, live, error, refresh } = useDashboard();
+  const { lang, setLang, t } = useLang();
+  const [showDetails, setShowDetails] = useState(false);
+
+  // Inertial wheel scrolling. Set up once, and it undoes itself completely on
+  // the way out — see smoothScroll.ts for what it deliberately leaves alone.
+  useEffect(() => startSmoothScroll(), []);
 
   if (error && !status) {
     return (
       <div className="shell">
         <header className="masthead"><span className="wordmark">tokio</span></header>
-        <div className="empty">
-          <strong>The daemon isn't answering.</strong>
-          Start it with <code>tokio start</code>, then this page will pick it up. ({error})
+        <div className="block-empty stand-alone">
+          <strong>{t('error.daemon')}</strong>
+          <span>{t('error.daemon.help')}</span>
         </div>
       </div>
     );
   }
-  if (!status) return <div className="shell"><header className="masthead"><span className="wordmark">tokio</span></header></div>;
+  if (!status) {
+    return <div className="shell"><header className="masthead"><span className="wordmark">tokio</span></header></div>;
+  }
 
-  const queued = jobs.filter((j) => j.status === 'queued' || j.status === 'deferred');
-  const dry = status.exhaustionAt;
+  const verdict = readVerdict(status, t);
+  const week = status.week;
 
   return (
     <div className="shell">
       <header className="masthead">
         <span className="wordmark">tokio</span>
         <span className="plan">{status.planLabel}</span>
-        <Provenance status={status} onRefresh={refresh} />
+        {live === false && <span className="stale">{t('error.stale')}</span>}
         <div className="spacer" />
-        {/*
-          No "live" badge: a green light that is on every second it works says
-          nothing. The only state worth the space is the one where the numbers
-          on screen have stopped being current, which is exactly what this
-          dashboard exists not to do quietly.
-        */}
-        {live === false && <span className="live stale"><i />reconnecting</span>}
+        {/* A segmented control rather than two buttons: the pill slides between
+            fixed-width halves, so switching language moves the indicator and
+            nothing else. */}
+        <div className="segmented" data-active={lang} role="group" aria-label="Language">
+          <span className="segmented-pill" aria-hidden="true" />
+          {(['es', 'en'] as Lang[]).map((code) => (
+            <button key={code} onClick={() => setLang(code)} aria-pressed={lang === code}>
+              {code.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        {/* Reserved width: "Details" and "Detalles" are different lengths, and
+            without this the whole right-hand group jumps on every switch. */}
+        <button className="link details-toggle" onClick={() => setShowDetails((v) => !v)} aria-expanded={showDetails}>
+          {showDetails ? t('details.hide') : t('details.show')}
+        </button>
       </header>
 
-      <section className="panel strip">
-        <div className="strip-head">
-          <div className="headline">
-            {pct(status.block.usedPct)} <span className="unit">of your 5-hour window</span>
-          </div>
-          <div className="spacer" />
-          <div className="readout">
-            <div className="label">resets in</div>
-            <div className="value">{until(status.block.resetsAt, status.now)}</div>
-          </div>
+      <section className={`state tone-${verdict.pressure}`}>
+        <div className="rings">
+          <Ring
+            usedPct={status.block.usedPct}
+            projectedPct={verdict.projectedPct}
+            pressure={verdict.pressure}
+            label={t('ring.session')}
+            sub={
+              <Countdown
+                at={status.block.resetsAt}
+                serverNow={status.now}
+                render={(remaining) => t('ring.resets.in', { until: remaining })}
+              />
+            }
+          />
+          <Ring
+            usedPct={week.usedPct}
+            label={t('ring.week')}
+            sub={
+              week.rolling
+                ? t('ring.rolling')
+                : t('ring.resets.at', { time: `${dayMonth(week.resetsAt, lang)} ${clock(week.resetsAt)}` })
+            }
+          />
         </div>
 
-        <WindowStrip status={status} queued={queued} />
-
-        <div className="readouts">
-          <div className="readout">
-            <div className="label">left</div>
-            <div className="value">{money(status.block.remainingCredits)}</div>
-          </div>
-          <div className="readout">
-            <div className="label">burn rate</div>
-            <div className="value">{status.burnRate > 0 ? `${money(status.burnRate)}/h` : 'idle'}</div>
-          </div>
-          <div className="readout">
-            <div className="label">runs dry</div>
-            <div className={`value${dry ? ' bad' : ''}`}>{dry ? clock(dry) : 'not this window'}</div>
-          </div>
-          <div className="readout">
-            <div className="label">queued</div>
-            <div className={`value${queued.length ? ' warn' : ''}`}>{queued.length}</div>
-          </div>
-          {status.accuracy.n >= 3 && (
-            <div className="readout">
-              <div className="label">forecast accuracy</div>
-              <div className="value">{pct(status.accuracy.withinP90 * 100)} within range</div>
-            </div>
+        <div className="pace">
+          {status.block.window.events > 0 ? (
+            <WindowStrip status={status} t={t} />
+          ) : (
+            <p className="block-empty">{t('pace.idle')}</p>
           )}
         </div>
       </section>
 
-      <Calibration status={status} onDone={refresh} />
+      <p className={`verdict tone-${verdict.pressure}`}>
+        {verdict.line}
+        {verdict.detail && <span className="quiet"> {verdict.detail}</span>}
+      </p>
 
-      <div className="columns">
-        <div className="panel">
-          <Worth value={status.value} />
-          <Gauge
-            name="week"
-            used={status.week.window.credits}
-            total={status.week.cap.credits}
-            usedPct={status.week.usedPct}
-            sub={status.week.rolling ? 'rolling 7 days' : `resets ${clock(status.week.resetsAt)}`}
-            color="var(--spent)"
-          />
-          {status.weekOpus && (
-            <Gauge
-              name="opus this week"
-              used={status.weekOpus.window.opusCredits}
-              total={status.weekOpus.cap.credits}
-              usedPct={status.weekOpus.usedPct}
-              sub="separate allowance"
-              color="var(--opus)"
-            />
-          )}
-          <div className="gauge">
-            <div className="gauge-top">
-              <span className="name">reserve kept free</span>
-              <span className="pct">{pct(status.reservePct)}</span>
-            </div>
-            <div className="sub">Queued jobs stop before eating this, so there's always something left for you.</div>
-          </div>
-        </div>
+      <Expand open={showDetails}>
+        <Details status={status} t={t} lang={lang} onRefresh={refresh} />
+      </Expand>
 
-        <Queue jobs={jobs} status={status} onChange={refresh} />
-      </div>
+      <Calibration status={status} t={t} onDone={refresh} />
 
-      <Compose status={status} onQueued={refresh} />
+      <Reveal>
+        <Queue jobs={jobs} status={status} onChange={refresh} t={t} />
+      </Reveal>
+
+      <Reveal delay={60}>
+        <section className="block">
+          <Compose status={status} onQueued={refresh} t={t} />
+        </section>
+      </Reveal>
+
+      <Reveal delay={120}>
+        <Worth value={status.value} t={t} lang={lang} />
+      </Reveal>
     </div>
   );
 }

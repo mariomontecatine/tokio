@@ -4,6 +4,7 @@ export interface Status {
   now: number;
   plan: string;
   planLabel: string;
+  planBasis: 'detected' | 'configured' | 'unknown';
   trace: { t: number; c: number }[];
   reservePct: number;
   block: WindowStatus;
@@ -14,8 +15,17 @@ export interface Status {
   queued: number;
   accuracy: { n: number; medianRatio: number; withinP90: number };
   value: ValueReport;
+  headroom: { turnP50: number; turnP90: number; few: number; many: number; sample: number } | null;
   probe: { at: number; ageMs: number; stale: boolean; error: string | null } | null;
   decisions: { id: string; run: boolean; reason: string }[];
+}
+
+export type PeriodName = 'today' | 'yesterday' | 'week' | 'month';
+
+export interface PeriodValue {
+  usd: number;
+  paidUsd: number | null;
+  multiple: number | null;
 }
 
 export interface ValueReport {
@@ -23,11 +33,15 @@ export interface ValueReport {
   sinceIsFirstTranscript: boolean;
   equivalentUsd: number;
   paidUsd: number | null;
+  monthlyUsd: number | null;
   elapsedDays: number;
   multiple: number | null;
   thisWeekUsd: number;
   thisBlockUsd: number;
   byMonth: { month: string; usd: number }[];
+  dailyUsd: number | null;
+  periods: Record<PeriodName, PeriodValue>;
+  byDay: { day: string; usd: number }[];
   reconciliation: { sessions: number; reportedUsd: number; ourUsd: number; ratio: number } | null;
 }
 
