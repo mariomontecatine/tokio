@@ -1,4 +1,5 @@
 import type { Db } from '../db.ts';
+import { resolvePlan } from './detect.ts';
 import type { Cap, PlanId } from '../types.ts';
 import type { Config } from '../config.ts';
 import profiles from './profiles.json' with { type: 'json' };
@@ -22,10 +23,11 @@ export function planLabel(plan: PlanId): string {
  * Claude Code's own `/usage`.
  */
 export function defaultCap(cfg: Config, kind: WindowKind): number | null {
-  if (cfg.plan === 'custom' && cfg.customCaps) {
+  const { plan } = resolvePlan(cfg);
+  if (plan === 'custom' && cfg.customCaps) {
     return kind === 'block' ? cfg.customCaps.block : kind === 'week' ? cfg.customCaps.week : cfg.customCaps.weekOpus;
   }
-  const p = PROFILES[cfg.plan] ?? PROFILES.max5!;
+  const p = PROFILES[plan] ?? PROFILES.pro!;
   return kind === 'block' ? p.block : kind === 'week' ? p.week : p.weekOpus;
 }
 
@@ -68,6 +70,54 @@ export function addAnchor(db: Db, kind: WindowKind, pct: number, creditsNow: num
   db.prepare('INSERT INTO anchors (ts, windowKind, pct, credits, impliedCap) VALUES (?,?,?,?,?)')
     .run(Date.now(), kind, pct, creditsNow, impliedCap);
   return impliedCap;
+}
+
+/** Don't record more often than this: the percentage barely moves in between. */
+const AUTO_ANCHOR_EVERY_MS = 30 * 60_000;
+/** Keep the recent ones; the median of a few dozen is already stable. */
+const KEEP_ANCHORS = 40;
+
+/**
+ * Below this, dividing by the percentage is unstable.
+ *
+ * The reported figure is a whole number, so at 2% the true value is anywhere in
+ * a half-point band — a 25% error on the cap. By 15% that band is under 4%.
+ */
+const STABLE_PCT = 15;
+
+/**
+ * Turn a reported percentage into a remembered cap, without being asked.
+ *
+ * `/usage` states a real percentage several times an hour, and each one pins
+ * the cap exactly: spend so far divided by the fraction used. Not recording
+ * them meant that the moment a window was too young for the division to be
+ * stable, the gauge fell back to a shipped guess — after hundreds of perfectly
+ * good readings had already gone past. One bad guess is then dividing every
+ * figure downstream of it.
+ *
+ * Recording them makes the shipped numbers matter only in the first busy window
+ * of a fresh install, which is what a default is for.
+ */
+export function rememberReading(
+  db: Db,
+  kind: WindowKind,
+  pct: number | null,
+  credits: number,
+  now = Date.now(),
+): void {
+  if (pct === null || pct < STABLE_PCT || pct > 100 || credits <= 0) return;
+
+  const last = db
+    .prepare('SELECT MAX(ts) AS at FROM anchors WHERE windowKind = ?')
+    .get(kind) as { at: number | null };
+  if (last.at !== null && now - last.at < AUTO_ANCHOR_EVERY_MS) return;
+
+  db.prepare('INSERT INTO anchors (ts, windowKind, pct, credits, impliedCap) VALUES (?,?,?,?,?)')
+    .run(now, kind, pct, credits, credits / (pct / 100));
+  db.prepare(
+    `DELETE FROM anchors WHERE windowKind = ? AND ts NOT IN
+     (SELECT ts FROM anchors WHERE windowKind = ? ORDER BY ts DESC LIMIT ?)`,
+  ).run(kind, kind, KEEP_ANCHORS);
 }
 
 export function addCeiling(db: Db, kind: WindowKind, credits: number): void {

@@ -70,6 +70,8 @@ export interface WindowStatus {
 export interface Status {
   now: number;
   plan: PlanId;
+  /** Whether that plan was detected, set by hand, or could not be determined. */
+  planBasis: 'detected' | 'configured' | 'unknown';
   /** Cumulative spend through the current 5h window, for the strip chart. */
   trace: { t: number; c: number }[];
   reservePct: number;
@@ -81,11 +83,16 @@ export interface Status {
   /** Epoch millis at which the block runs out at the current burn rate. */
   exhaustionAt: number | null;
   queued: number;
+  /** What's left, counted in prompts rather than dollars. Null without enough history. */
+  headroom: { turnP50: number; turnP90: number; few: number; many: number; sample: number } | null;
   /** State of the last read of Claude Code's own `/usage`. */
   probe: { at: number; ageMs: number; stale: boolean; error: string | null } | null;
 }
 
 export type PlanId = 'pro' | 'max5' | 'max20' | 'custom';
+
+/** What the config may hold. 'auto' means "read it off the Claude account". */
+export type PlanSetting = PlanId | 'auto';
 
 export type Safety = 'plan' | 'edits' | 'full';
 export type RunPolicy = 'on-reset' | 'asap-if-headroom' | 'at' | 'manual';

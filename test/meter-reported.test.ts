@@ -110,3 +110,55 @@ test('a minute of wobble in the reported reset is not a new window', async () =>
   assert.equal(isRealReset(start, start - 60_000), false);
   assert.equal(isRealReset(start, start + 5 * HOUR), true, 'a real reset moves it by hours');
 });
+
+test('a reply with no session line does not displace the last good one', () => {
+  // What actually happens at a reset: for a minute or so /usage returns the
+  // weekly line and nothing about the session. Taking that reply wholesale used
+  // to drop the block to local reconstruction and put an estimate on screen
+  // where Anthropic's own number had been.
+  const db = openDb(':memory:');
+  const cfg = { ...loadConfig(), plan: 'max5' as const };
+  const now = Date.parse('2026-09-02T13:34:00');
+
+  saveProbe(db, {
+    at: now - 4 * 60_000,
+    sessionPct: 1, sessionResetsAt: Date.parse('2026-09-02T18:30:00'),
+    weekPct: 12, weekResetsAt: null, opusPct: null, opusResetsAt: null, error: null,
+  });
+  saveProbe(db, {
+    at: now - 60_000,
+    sessionPct: null, sessionResetsAt: null,
+    weekPct: 12, weekResetsAt: null, opusPct: null, opusResetsAt: null, error: null,
+  });
+
+  const s = computeStatus(db, cfg, now);
+  assert.equal(s.block.source, 'reported', 'the good session reading still governs');
+  assert.equal(s.block.usedPct, 1);
+  assert.equal(s.block.resetsAt, Date.parse('2026-09-02T18:30:00'));
+});
+
+test('a reconstruction never counts spend from before a reset it was told about', () => {
+  // The reset landed at 13:30. Spend at 13:08 belongs to the window that ended
+  // there; counting it against the new one reported 9% where the truth was 1%.
+  const db = openDb(':memory:');
+  const cfg = { ...loadConfig(), plan: 'max5' as const };
+  const now = Date.parse('2026-09-02T13:34:00');
+
+  seed(db, [
+    { minutesAgo: 26, credits: 7.74 },  // 13:08 — the old window
+    { minutesAgo: 2, credits: 0.5 },    // 13:32 — the new one
+  ], now);
+
+  // A reading that knew about the 13:30 reset, but is now too stale to drive
+  // the gauge — so the fallback runs, which is the case under test.
+  saveProbe(db, {
+    at: now - 60 * 60_000,
+    sessionPct: 86, sessionResetsAt: Date.parse('2026-09-02T13:30:00'),
+    weekPct: 12, weekResetsAt: null, opusPct: null, opusResetsAt: null, error: null,
+  });
+
+  const s = computeStatus(db, cfg, now);
+  assert.equal(s.block.source, 'estimated');
+  assert.equal(s.block.window.start, Date.parse('2026-09-02T13:30:00'), 'the window starts at the reset, not at 13:00');
+  assert.ok(Math.abs(s.block.window.credits - 0.5) < 0.001, 'only spend after the reset counts');
+});

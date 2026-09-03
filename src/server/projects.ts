@@ -81,7 +81,10 @@ export function recentSessions(claudeDir: string, cwd: string, limit = 15): Sess
     } catch {
       // Unreadable transcript; still list the session by id.
     }
-    sessions.push({ sessionId: file.replace(/\.jsonl$/, ''), title: title || '(untitled session)', updatedAt });
+    // Empty when Claude Code has not titled the session yet. Left empty on
+    // purpose: a placeholder here would force every caller to show the same
+    // useless words, and the timestamp is a far better label in a picker.
+    sessions.push({ sessionId: file.replace(/\.jsonl$/, ''), title, updatedAt });
   }
   return sessions.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
 }

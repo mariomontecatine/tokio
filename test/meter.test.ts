@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { buildBlocks, activeBlock, floorToHour, HOUR } from '../src/meter/blocks.ts';
 import { weekStart } from '../src/meter/weekly.ts';
 import { openDb } from '../src/db.ts';
-import { addAnchor, addCeiling, resolveCap } from '../src/plans/calibrate.ts';
+import { addAnchor, addCeiling, resolveCap, rememberReading } from '../src/plans/calibrate.ts';
 import { loadConfig } from '../src/config.ts';
 
 const at = (iso: string, credits = 1, family: 'opus' | 'sonnet' = 'opus') => ({ ts: Date.parse(iso), credits, family });
@@ -84,4 +84,36 @@ test('nonsense percentages are refused', () => {
   const db = openDb(':memory:');
   assert.throws(() => addAnchor(db, 'block', 0, 10), /between 0 and 100/);
   assert.throws(() => addAnchor(db, 'block', 50, 0), /run something first/);
+});
+
+test('a reported percentage is remembered, so a shipped guess stops being consulted', () => {
+  const db = openDb(':memory:');
+  const cfg = loadConfig();
+  assert.equal(resolveCap(db, cfg, 'block').basis, 'default', 'nothing read yet');
+
+  // What /usage states several times an hour: a real percentage against real spend.
+  rememberReading(db, 'block', 40, 10, Date.now());
+  const cap = resolveCap(db, cfg, 'block');
+  assert.equal(cap.basis, 'calibrated');
+  assert.equal(cap.credits, 25, '$10 at 40% is a $25 window');
+});
+
+test('an early percentage is too unstable to divide by', () => {
+  const db = openDb(':memory:');
+  // A whole-number 2% could be anything from 1.5 to 2.5 — a quarter off.
+  rememberReading(db, 'block', 2, 1, Date.now());
+  assert.equal(resolveCap(db, loadConfig(), 'block').basis, 'default');
+});
+
+test('readings are not recorded faster than the percentage moves', () => {
+  const db = openDb(':memory:');
+  const now = Date.now();
+  rememberReading(db, 'block', 40, 10, now);
+  rememberReading(db, 'block', 41, 11, now + 60_000);
+  const rows = db.prepare("SELECT COUNT(*) AS n FROM anchors WHERE windowKind = 'block'").get() as { n: number };
+  assert.equal(rows.n, 1, 'a minute later is the same reading');
+
+  rememberReading(db, 'block', 60, 15, now + 40 * 60_000);
+  const later = db.prepare("SELECT COUNT(*) AS n FROM anchors WHERE windowKind = 'block'").get() as { n: number };
+  assert.equal(later.n, 2, 'half an hour later is a new one');
 });
