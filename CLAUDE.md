@@ -25,6 +25,12 @@ point `XDG_CONFIG_HOME` at a temp directory before anything imports the config, 
 `PATCH /api/config` calls `saveConfig`, which writes to the real path — without that redirect the
 suite edits the config of whoever runs it.
 
+Nor may a test reach the desktop. `notify.test.ts` once ran with `desktop: true` on the theory
+that the notifier would be missing; the moment desktop notifications stopped being Linux-only it
+started popping real toasts at whoever ran `npm test`. Notification tests use `desktop: false`,
+and the crash-safety of a missing binary is tested through `runDetached` against a name no system
+has.
+
 The executor is tested against `test/fake-claude.sh`, which
 emits the same `stream-json` shape as the real CLI and can simulate a rate limit
 (`TOKIO_FAKE_MODE=ratelimit`) or a crash (`TOKIO_FAKE_MODE=crash`). Extend that script rather than
@@ -54,6 +60,20 @@ keeps the old price forever. And leave the reconciliation in `meter/value.ts` al
 writes a `cost-state` line into some transcripts with its own session total, and comparing against
 it is the only external check this project has. Landing a few percent under it is correct —
 session-titling, compaction and retries never reach the transcript.
+
+## The plan is read, not assumed
+
+`src/plans/detect.ts` reads the plan off `~/.claude.json` (`organizationType` plus
+`organizationRateLimitTier`, which is the only thing separating Max 5× from Max 20×). Config
+`plan` defaults to `'auto'`; a value set by hand always wins.
+
+When it cannot be determined — Team, Enterprise, an unqualified Max, an API key — `resolvePlan`
+returns `basis: 'unknown'` and `computeValue` withholds the price, so no payback is built on a
+plan nobody confirmed. Keep that: the gauges never needed the plan, only the payback does.
+
+Nothing about the developer's own account belongs in this repo. `src/plans/profiles.json` once
+carried a real session's figures in its `_note`; it is now a generic statement, and the README
+examples use invented numbers. Check that before publishing anything.
 
 ## Honesty rules for this project
 
