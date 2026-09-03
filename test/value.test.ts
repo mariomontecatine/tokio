@@ -144,3 +144,66 @@ test('a price correction is applied to history, not just to new events', () => {
   );
   reopened.close();
 });
+
+test('the fee is reported with the rate it was pro-rated from', () => {
+  const db = openDb(':memory:');
+  const cfg: Config = { ...loadConfig(), plan: 'max5', subscriptionStartedAt: null };
+  seed(db, [{ daysAgo: 32, credits: 400 }, { daysAgo: 1, credits: 38 }]);
+
+  const v = computeValue(db, cfg);
+  assert.equal(v.monthlyUsd, 100, 'the price behind the figure is stated, not left to be reverse-engineered');
+  // The pro-rated fee must be exactly the rate times the months elapsed, so the
+  // arithmetic shown on screen ("32 days at $100/month") actually checks out.
+  assert.ok(Math.abs(v.paidUsd! - v.monthlyUsd! * (v.elapsedDays / 30.437)) < 1e-9);
+});
+
+test('a day is judged against a day of the fee, not a month of it', () => {
+  const db = openDb(':memory:');
+  const cfg: Config = { ...loadConfig(), plan: 'max5', subscriptionStartedAt: null };
+  seed(db, [{ daysAgo: 0, credits: 33 }, { daysAgo: 40, credits: 500 }]);
+
+  const v = computeValue(db, cfg);
+  assert.ok(Math.abs(v.dailyUsd! - 100 / 30.437) < 1e-9, '$100/month is $3.29/day');
+  // Today's $33 against one day's $3.29 is ten times over — the point of the
+  // figure is that it answers "was today worth it", not "was the month".
+  assert.ok(Math.abs(v.periods.today.multiple! - 33 / v.dailyUsd!) < 1e-9);
+  assert.equal(v.periods.today.usd, 33);
+  // The 30-day window is charged for thirty days, and the 40-day-old spend is
+  // outside it.
+  assert.ok(Math.abs(v.periods.month.paidUsd! - v.dailyUsd! * 30) < 1e-9);
+  assert.equal(v.periods.month.usd, 33);
+});
+
+test('a quiet day reports nothing rather than a zero payback', () => {
+  const db = openDb(':memory:');
+  seed(db, [{ daysAgo: 3, credits: 10 }]);
+  const v = computeValue(db, { ...loadConfig(), plan: 'max5' });
+  assert.equal(v.periods.today.usd, 0);
+  assert.equal(v.periods.today.multiple, 0, 'zero usage is zero, never a division by nothing');
+  assert.ok(v.periods.week.usd > 0);
+});
+
+test('the calendar has one entry per day that had usage, oldest first', () => {
+  const db = openDb(':memory:');
+  seed(db, [{ daysAgo: 2, credits: 5 }, { daysAgo: 2, credits: 5 }, { daysAgo: 1, credits: 3 }]);
+  const v = computeValue(db, { ...loadConfig(), plan: 'max5' });
+  assert.equal(v.byDay.length, 2, 'two events on one day are one day');
+  assert.equal(v.byDay[0]!.usd, 10, 'and their costs are summed');
+  assert.ok(v.byDay[0]!.day < v.byDay[1]!.day, 'oldest first');
+});
+
+test('an undetermined plan yields no payback rather than a plausible one', () => {
+  // The gauges never needed the plan — they come from Anthropic's percentages —
+  // so an unknown plan withholds the price instead of inventing one.
+  const db = openDb(':memory:');
+  seed(db, [{ daysAgo: 2, credits: 40 }]);
+  const dir = mkdtempSync(join(tmpdir(), 'tokio-noplan-'));
+  const cfg: Config = { ...loadConfig(), claudeConfigDir: dir, plan: 'auto', planPriceUsd: null };
+
+  const v = computeValue(db, cfg);
+  assert.equal(v.monthlyUsd, null);
+  assert.equal(v.paidUsd, null);
+  assert.equal(v.multiple, null);
+  assert.equal(v.dailyUsd, null);
+  assert.ok(v.equivalentUsd > 0, 'usage is still counted, it just is not divided by a guess');
+});

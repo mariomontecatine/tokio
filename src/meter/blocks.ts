@@ -20,16 +20,26 @@ export function floorToHour(ts: number): number {
  * `blockHours` later. An idle gap needs no separate rule: going quiet for a
  * whole window's length necessarily pushes the next message past the window's
  * end, so it opens a new block on its own.
+ *
+ * `notBefore` is a reset we were actually told about. Everything before it
+ * belongs to a window that is over, and both halves of the rule matter: those
+ * events are dropped, and a block that would otherwise be anchored to an hour
+ * before the reset starts at the reset instead. Without it, the first minutes
+ * of a fresh window inherit the tail of the previous one — a reset at 13:30
+ * with spend at 13:08 anchors the new block to 13:00 and counts it twice.
  */
-export function buildBlocks(events: BlockInput[], blockHours = 5): Window[] {
+export function buildBlocks(events: BlockInput[], blockHours = 5, notBefore: number | null = null): Window[] {
   const span = blockHours * HOUR;
-  const sorted = [...events].sort((a, b) => a.ts - b.ts);
+  const sorted = [...events]
+    .filter((e) => notBefore === null || e.ts >= notBefore)
+    .sort((a, b) => a.ts - b.ts);
   const blocks: Window[] = [];
   let current: Window | null = null;
 
   for (const e of sorted) {
     if (!current || e.ts >= current.end) {
-      const start = floorToHour(e.ts);
+      const anchored = floorToHour(e.ts);
+      const start = notBefore !== null ? Math.max(anchored, notBefore) : anchored;
       current = { start, end: start + span, credits: 0, opusCredits: 0, events: 0, lastActivity: null, active: false };
       blocks.push(current);
     }
@@ -42,10 +52,11 @@ export function buildBlocks(events: BlockInput[], blockHours = 5): Window[] {
 }
 
 /** The block `now` falls inside, or an empty block starting now if the last one has expired. */
-export function activeBlock(blocks: Window[], now: number, blockHours = 5): Window {
+export function activeBlock(blocks: Window[], now: number, blockHours = 5, notBefore: number | null = null): Window {
   const span = blockHours * HOUR;
   const last = blocks[blocks.length - 1];
   if (last && now < last.end) return { ...last, active: true };
-  const start = floorToHour(now);
+  const anchored = floorToHour(now);
+  const start = notBefore !== null ? Math.max(anchored, notBefore) : anchored;
   return { start, end: start + span, credits: 0, opusCredits: 0, events: 0, lastActivity: null, active: false };
 }

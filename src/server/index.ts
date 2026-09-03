@@ -12,6 +12,7 @@ import { computeValue } from '../meter/value.ts';
 import { predict } from '../estimator/predict.ts';
 import { accuracy } from '../estimator/learn.ts';
 import { addAnchor, planLabel, type WindowKind } from '../plans/calibrate.ts';
+import { resolvePlan } from '../plans/detect.ts';
 import { createJob, deleteJob, getJob, listJobs, updateJob } from '../queue/store.ts';
 import type { Scheduler } from '../queue/scheduler.ts';
 import { recentSessions, knownProjects } from './projects.ts';
@@ -90,7 +91,7 @@ export async function createServer(deps: ServerDeps) {
   app.get('/api/status', async () => ({
     ...computeStatus(db, cfg),
     value: computeValue(db, cfg),
-    planLabel: planLabel(cfg.plan),
+    planLabel: planLabel(resolvePlan(cfg).plan),
     accuracy: accuracy(db),
     decisions: scheduler.explain().map((d) => ({ id: d.job.id, run: d.run, reason: d.reason })),
   }));

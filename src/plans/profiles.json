@@ -1,24 +1,24 @@
 {
-  "_note": "Anthropic does not publish these. The 5-hour figure for max5 is measured: one real Max 5x account read 44% off /usage against $35.99 of counted spend, implying ~$82. Pro and max20 are that figure scaled by plan price, and every weekly number is still a guess. Run `tokio calibrate` to replace all of it with your own.",
+  "_note": "Anthropic does not publish its limits, so these are rough starting points, not measurements. They exist only so a fresh install has something to draw before it has read anything, and they are replaced the moment `claude -p \"/usage\"` reports a real percentage \u2014 which is almost immediately for anyone signed in to a subscription, and is then remembered, so these numbers stop mattering after the first busy window. They matter mainly to API-key users, who get no percentage at all. The Max figures are Pro scaled by the plan's own multiplier. `tokio calibrate <pct>` replaces them with your own. Anything derived from this file reaches the interface marked `basis: 'default'`, so a guess is never shown as a fact.",
   "pro": {
     "label": "Pro",
     "priceUsd": 20,
-    "block": 16,
-    "week": 130,
+    "block": 25,
+    "week": 200,
     "weekOpus": null
   },
   "max5": {
-    "label": "Max 5×",
+    "label": "Max 5\u00d7",
     "priceUsd": 100,
-    "block": 82,
-    "week": 650,
-    "weekOpus": 165
+    "block": 125,
+    "week": 1000,
+    "weekOpus": 250
   },
   "max20": {
-    "label": "Max 20×",
+    "label": "Max 20\u00d7",
     "priceUsd": 200,
-    "block": 328,
-    "week": 2600,
-    "weekOpus": 650
+    "block": 500,
+    "week": 4000,
+    "weekOpus": 1000
   }
 }

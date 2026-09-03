@@ -4,13 +4,16 @@ import type { Status, Window, WindowStatus } from '../types.ts';
 import { activeBlock, buildBlocks, HOUR, type BlockInput } from './blocks.ts';
 import { buildWeek } from './weekly.ts';
 import { resolveCap } from '../plans/calibrate.ts';
-import { latestProbe, latestAttempt } from '../usage/store.ts';
+import { latestAttempt, latestSessionRead, latestWeekRead, lastKnownReset } from '../usage/store.ts';
+import { headroom } from './headroom.ts';
+import { resolvePlan } from '../plans/detect.ts';
 import type { UsageProbe } from '../usage/probe.ts';
 
 export { buildBlocks, activeBlock, floorToHour, HOUR } from './blocks.ts';
 export { buildWeek, weekStart } from './weekly.ts';
 export { creditsFor, familyOf, ratesFor, resolveRates, TIERS } from './weights.ts';
 export { computeValue } from './value.ts';
+export { headroom } from './headroom.ts';
 
 const BURN_SAMPLE_MS = 30 * 60_000;
 
@@ -102,21 +105,29 @@ function toStatus(
 }
 
 export function computeStatus(db: Db, cfg: Config, now = Date.now()): Status {
-  const probe = latestProbe(db);
   const attempt = latestAttempt(db);
-  const fresh: UsageProbe | null = probe && now - probe.at <= cfg.usageMaxAgeMs ? probe : null;
+  // Session and week are read separately: `/usage` can return one without the
+  // other around a reset, and a reply missing the session line must not throw
+  // away a good session figure. See usage/store.ts.
+  const sessionRead = latestSessionRead(db);
+  const weekRead = latestWeekRead(db);
+  const session: UsageProbe | null = sessionRead && now - sessionRead.at <= cfg.usageMaxAgeMs ? sessionRead : null;
+  const fresh: UsageProbe | null = weekRead && now - weekRead.at <= cfg.usageMaxAgeMs ? weekRead : null;
 
   const events = loadEvents(db, now - 15 * DAY);
 
   // The real window is the five hours ending at the reset Anthropic reports.
   // Reconstructing it from transcripts is only a fallback: sessions do not
-  // start on the hour, so the guessed boundary can be hours off.
+  // start on the hour, so the guessed boundary can be hours off — and the
+  // fallback still honours the last reset we were told about, so it cannot
+  // count spend that a finished window already accounted for.
+  const resetFloor = lastKnownReset(db, now);
   let block: Window;
-  if (fresh?.sessionResetsAt) {
-    const start = fresh.sessionResetsAt - cfg.blockHours * HOUR;
-    block = { start, end: fresh.sessionResetsAt, ...creditsIn(events, start, fresh.sessionResetsAt), active: true };
+  if (session?.sessionResetsAt) {
+    const start = session.sessionResetsAt - cfg.blockHours * HOUR;
+    block = { start, end: session.sessionResetsAt, ...creditsIn(events, start, session.sessionResetsAt), active: true };
   } else {
-    block = activeBlock(buildBlocks(events, cfg.blockHours), now, cfg.blockHours);
+    block = activeBlock(buildBlocks(events, cfg.blockHours, resetFloor), now, cfg.blockHours, resetFloor);
   }
 
   const weekAnchored = fresh?.weekResetsAt ?? null;
@@ -124,7 +135,7 @@ export function computeStatus(db: Db, cfg: Config, now = Date.now()): Status {
     ? { start: weekAnchored - 7 * DAY, end: weekAnchored, ...creditsIn(events, weekAnchored - 7 * DAY, weekAnchored), active: true }
     : buildWeek(events, now, cfg.weeklyAnchor);
 
-  const blockCap = capFromProbe(block.credits, fresh?.sessionPct ?? null);
+  const blockCap = capFromProbe(block.credits, session?.sessionPct ?? null);
   const weekCap = capFromProbe(week.credits, fresh?.weekPct ?? null);
   const opusCapReported = capFromProbe(week.opusCredits, fresh?.opusPct ?? null);
 
@@ -141,7 +152,7 @@ export function computeStatus(db: Db, cfg: Config, now = Date.now()): Status {
   const recent = events.filter((e) => e.ts >= now - BURN_SAMPLE_MS);
   const burnRate = recent.reduce((s, e) => s + e.credits, 0) / (BURN_SAMPLE_MS / HOUR);
 
-  const blockStatus = toStatus(block, blockCapInfo, block.credits, block.end, fresh?.sessionPct ?? null);
+  const blockStatus = toStatus(block, blockCapInfo, block.credits, block.end, session?.sessionPct ?? null);
 
   let exhaustionAt: number | null = null;
   if (burnRate > 0 && blockStatus.remainingCredits > 0) {
@@ -159,9 +170,12 @@ export function computeStatus(db: Db, cfg: Config, now = Date.now()): Status {
 
   const queued = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued','deferred')").get() as { n: number }).n;
 
+  const plan = resolvePlan(cfg);
+
   return {
     now,
-    plan: cfg.plan,
+    plan: plan.plan,
+    planBasis: plan.basis,
     trace: blockTrace(events, block.start, block.end),
     reservePct: cfg.reservePct,
     block: blockStatus,
@@ -172,6 +186,7 @@ export function computeStatus(db: Db, cfg: Config, now = Date.now()): Status {
     burnRate,
     exhaustionAt,
     queued,
+    headroom: headroom(db, blockStatus.remainingCredits, now),
     probe: attempt
       ? { at: attempt.at, ageMs: now - attempt.at, stale: now - attempt.at > cfg.usageMaxAgeMs, error: attempt.error }
       : null,

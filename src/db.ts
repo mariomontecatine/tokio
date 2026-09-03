@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
  * only apply to future transcripts and leave months of history priced at the
  * old numbers — with nothing on screen to say which was which.
  */
-const PRICING_VERSION = '2';
+const PRICING_VERSION = '3';
 
 let cached: Db | null = null;
 
@@ -201,6 +201,18 @@ function repriceEvents(db: Db): void {
         { speed: r.speed, inferenceGeo: r.inferenceGeo },
       );
       update.run(credits, r.messageId, r.requestId);
+    }
+    // Calibration is recorded as "this many credits was that percentage", so a
+    // change of rates leaves the stored cap describing money that no longer
+    // exists. It cannot be converted — the error depends on which models the
+    // window happened to use — so the anchors go, and the interface falls back
+    // to saying the cap is a default until you calibrate again. Keeping them
+    // would be keeping a wrong number that looks like a measured one.
+    const stale = db.prepare('SELECT COUNT(*) AS n FROM anchors').get() as { n: number };
+    if (stale.n > 0) {
+      db.prepare('DELETE FROM anchors').run();
+      db.prepare('DELETE FROM ceilings').run();
+      console.error(`tokio: prices were corrected, so ${stale.n} calibration anchor(s) no longer mean anything and were cleared. Run "tokio calibrate <pct>" to set it again.`);
     }
     setKv(db, 'pricingVersion', PRICING_VERSION);
     db.exec('COMMIT');

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --disable-warning=ExperimentalWarning
 import { parseArgs } from 'node:util';
 import { openDb } from './db.ts';
 import { loadConfig, saveConfig, configPath, claudeDir, redactConfig } from './config.ts';
@@ -9,6 +9,7 @@ import { probeUsage } from './usage/probe.ts';
 import { saveProbe, latestProbe } from './usage/store.ts';
 import { predict } from './estimator/predict.ts';
 import { addAnchor, planLabel } from './plans/calibrate.ts';
+import { resolvePlan } from './plans/detect.ts';
 import { createJob, deleteJob, getJob, listJobs, updateJob } from './queue/store.ts';
 import { recentSessions } from './server/projects.ts';
 import { effectiveModel } from './models.ts';
@@ -83,7 +84,15 @@ async function cmdStatus(refresh: boolean): Promise<void> {
         ? '  (estimated — run "tokio calibrate <pct>")'
         : `  (calibrated, ${s.block.cap.anchors} anchor(s))`;
 
-  console.log(`\n  Plan: ${planLabel(cfg.plan)}${caveat}\n`);
+  const plan = resolvePlan(cfg);
+  // An undetermined plan is named as such. Printing the fallback's label would
+  // put a plan the user never confirmed next to figures derived from its price.
+  const name = plan.basis === 'unknown' ? 'unknown' : planLabel(plan.plan);
+  const how =
+    plan.basis === 'detected' ? ' (read from your Claude account)'
+    : plan.basis === 'unknown' ? ' — set "plan" in your config for a payback figure'
+    : '';
+  console.log(`\n  Plan: ${name}${how}${caveat}\n`);
   console.log(`  5h window  ${bar(s.block.usedPct)} ${s.block.usedPct.toFixed(0).padStart(3)}%   ${money(s.block.window.credits)} of ${money(s.block.cap.credits)}`);
   console.log(`             resets at ${clock(s.block.resetsAt)}`);
   console.log(`  Week       ${bar(s.week.usedPct)} ${s.week.usedPct.toFixed(0).padStart(3)}%   ${money(s.week.window.credits)} of ${money(s.week.cap.credits)}`);
@@ -135,7 +144,7 @@ function cmdAdd(prompt: string, opts: Record<string, any>): void {
     const [latest] = recentSessions(claudeDir(cfg), cwd, 1);
     if (!latest) throw new Error(`no previous session found for ${cwd}`);
     resumeSessionId = latest.sessionId;
-    console.log(`  resuming "${latest.title}"`);
+    console.log(`  resuming "${latest.title || latest.sessionId.slice(0, 8)}"`);
   }
 
   const model = opts.model ?? effectiveModel(cfg);
@@ -211,19 +220,24 @@ function cmdCalibrate(pctRaw: string, window: string): void {
 function cmdValue(): void {
   const { db, cfg } = freshDb();
   const v = computeValue(db, cfg);
-  const from = new Date(v.since).toLocaleDateString();
+  const month = v.periods.month;
 
-  console.log(`\n  Since ${from}${v.sinceIsFirstTranscript ? ' (your oldest transcript)' : ''}\n`);
-  console.log(`  Run on the API this would have cost   ${money(v.equivalentUsd).padStart(10)}`);
-  if (v.paidUsd !== null) {
-    console.log(`  Subscription over the same period     ${money(v.paidUsd).padStart(10)}  (${Math.round(v.elapsedDays)} days at ${money(v.paidUsd / (v.elapsedDays / 30.437))}/month)`);
-    if (v.multiple !== null) {
-      console.log(`  So the plan is paying back            ${(v.multiple.toFixed(1) + '×').padStart(10)}`);
-    } else {
-      console.log('  Too little history yet to divide one by the other.');
+  // Thirty days, not all time. Claude Code keeps transcripts for thirty days,
+  // so "since the beginning" is the same month wearing a longer name.
+  console.log('\n  Last 30 days\n');
+  console.log(`  Run on the API this would have cost   ${money(month.usd).padStart(10)}`);
+  if (month.paidUsd !== null) {
+    console.log(`  Subscription for those 30 days        ${money(month.paidUsd).padStart(10)}  (${v.monthlyUsd === null ? '—' : money(v.monthlyUsd)}/month)`);
+    if (month.multiple !== null && month.usd > 0) {
+      console.log(`  So the plan is paying back            ${(month.multiple.toFixed(1) + '×').padStart(10)}`);
     }
+  } else {
+    console.log('  No plan price, so there is nothing to divide it by. Set "plan" in your config.');
   }
-  console.log(`\n  Last 7 days   ${money(v.thisWeekUsd)}`);
+
+  const rate = (p: { usd: number; multiple: number | null }) =>
+    p.usd <= 0 ? '—' : p.multiple === null ? money(p.usd) : `${p.multiple.toFixed(1)}×`;
+  console.log(`\n  Today ${rate(v.periods.today)}   ·   Yesterday ${rate(v.periods.yesterday)}   ·   7 days ${rate(v.periods.week)}`);
   console.log(`  Last 5 hours  ${money(v.thisBlockUsd)}`);
 
   if (v.byMonth.length > 1) {
@@ -252,7 +266,7 @@ function cmdSessions(cwd: string): void {
   if (!sessions.length) return console.log(`  No sessions found for ${cwd}`);
   console.log('');
   for (const s of sessions) {
-    console.log(`  ${s.sessionId}  ${new Date(s.updatedAt).toLocaleString()}  ${s.title}`);
+    console.log(`  ${s.sessionId}  ${new Date(s.updatedAt).toLocaleString()}  ${s.title || '—'}`);
   }
   console.log('');
 }

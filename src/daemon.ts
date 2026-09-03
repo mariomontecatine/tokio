@@ -7,6 +7,7 @@ import { Scheduler } from './queue/scheduler.ts';
 import { createClaudeCodeProvider } from './providers/claudeCode.ts';
 import { createServer } from './server/index.ts';
 import { computeStatus, isRealReset } from './meter/index.ts';
+import { rememberReading } from './plans/calibrate.ts';
 import { notify } from './notify/index.ts';
 import { probeUsage } from './usage/probe.ts';
 import { dashboardUrl, isLoopback, onWsl } from './net.ts';
@@ -63,6 +64,11 @@ export async function startDaemon(options: DaemonOptions = {}) {
     const probe = await probeUsage(cfg);
     saveProbe(db, probe);
     pruneProbes(db);
+    // Every usable reading also pins the cap, so the shipped guesses stop being
+    // consulted after the first busy window. See plans/calibrate.ts.
+    const status = computeStatus(db, cfg);
+    rememberReading(db, 'block', probe.sessionPct, status.block.window.credits);
+    rememberReading(db, 'week', probe.weekPct, status.week.window.credits);
     bus.emit('change');
     return probe;
   };

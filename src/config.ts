@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { chmodSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import type { PlanId, Safety } from './types.ts';
+import type { PlanSetting, Safety } from './types.ts';
 
 export interface NotifyConfig {
   /**
@@ -17,7 +17,8 @@ export interface NotifyConfig {
 }
 
 export interface Config {
-  plan: PlanId;
+  /** 'auto' reads the plan off your Claude account; see plans/detect.ts. */
+  plan: PlanSetting;
   /** Only used when plan === 'custom'; USD-equivalent credits. */
   customCaps: { block: number; week: number; weekOpus: number | null } | null;
   host: string;
@@ -48,7 +49,7 @@ export interface Config {
 }
 
 const DEFAULTS: Config = {
-  plan: 'max5',
+  plan: 'auto',
   customCaps: null,
   host: '127.0.0.1',
   port: 4646,
