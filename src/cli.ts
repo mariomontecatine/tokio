@@ -1,4 +1,10 @@
-#!/usr/bin/env -S node --disable-warning=ExperimentalWarning
+#!/usr/bin/env node
+// Plain, on purpose. `env -S` would let this silence the experimental notice
+// node:sqlite prints on every start, but it is a BSD/GNU extension: where it is
+// missing the script does not run at all, and "works with one stray line of
+// output" beats "might not start" on a machine nobody here can test. The
+// installed command is a shim that passes the flag properly; from source, the
+// notice shows.
 import { parseArgs } from 'node:util';
 import { openDb } from './db.ts';
 import { loadConfig, saveConfig, configPath, claudeDir, redactConfig } from './config.ts';
