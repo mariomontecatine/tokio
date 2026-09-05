@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { Config } from '../config.ts';
+import { claudeInvocation } from '../claudeCli.ts';
 
 export interface UsageProbe {
   at: number;
@@ -136,7 +137,8 @@ export function nextProbeDelay(t: ProbeTiming): number {
  */
 export function probeUsage(cfg: Config, timeoutMs = 30_000): Promise<UsageProbe> {
   return new Promise((resolve) => {
-    const child = spawn(cfg.claudeBin, ['-p', '/usage', '--output-format', 'json'], {
+    const { cmd, argv } = claudeInvocation(cfg, ['-p', '/usage', '--output-format', 'json']);
+    const child = spawn(cmd, argv, {
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });

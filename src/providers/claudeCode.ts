@@ -4,6 +4,7 @@ import type { Job, Safety } from '../types.ts';
 import type { Provider, RunContext, RunResult } from './types.ts';
 import type { Config } from '../config.ts';
 import { effectiveModel } from '../models.ts';
+import { claudeInvocation } from '../claudeCli.ts';
 
 /** Claude Code's `--permission-mode` value for each of our safety levels. */
 const PERMISSION_MODE: Record<Safety, string | null> = {
@@ -79,7 +80,17 @@ export function createClaudeCodeProvider(cfg: Config): Provider {
     label: 'Claude Code (subscription)',
 
     async available() {
-      if (cfg.claudeBin.includes('/') && !existsSync(cfg.claudeBin)) {
+      // A path is only checkable when it is a path on *this* filesystem.
+      //
+      // Two ways it is not. A launcher means `claudeBin` is resolved on the far
+      // side of it — inside WSL, inside a container — where a Windows
+      // `existsSync` has nothing to say and would fail a perfectly good setup.
+      // And the separator test was `/` alone, which never matches a Windows
+      // path, so an absolute one there went unchecked instead of being caught
+      // before the spawn.
+      const launched = (cfg.claudeLauncher ?? []).length > 0;
+      const looksLikePath = cfg.claudeBin.includes('/') || cfg.claudeBin.includes('\\');
+      if (!launched && looksLikePath && !existsSync(cfg.claudeBin)) {
         return { ok: false, reason: `claude binary not found at ${cfg.claudeBin}` };
       }
       return { ok: true };
@@ -91,8 +102,8 @@ export function createClaudeCodeProvider(cfg: Config): Provider {
 
     execute(job: Job, ctx: RunContext): Promise<RunResult> {
       return new Promise((resolve) => {
-        const args = buildArgs(job, cfg);
-        const child = spawn(cfg.claudeBin, args, {
+        const { cmd, argv } = claudeInvocation(cfg, buildArgs(job, cfg));
+        const child = spawn(cmd, argv, {
           cwd: job.cwd,
           env: process.env,
           stdio: ['pipe', 'pipe', 'pipe'],

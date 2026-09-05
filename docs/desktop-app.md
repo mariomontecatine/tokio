@@ -120,12 +120,47 @@ Worth doing on its own, before any window exists. Concrete, located work:
   `claudeBin: 'claude'`. On Windows that is `claude.cmd`, which `spawn` will not
   find without PATHEXT resolution or `shell: true`. Prefer explicit resolution
   over `shell: true` — a prompt reaches the shell otherwise.
-- **`[open]` WSL.** The first user of this runs Claude Code *inside WSL*, so a
-  Windows-native tokio cannot see those transcripts or that `claude`. Either
-  tokio runs inside WSL with the window on the Windows side, or the Windows app
-  bridges to it, or Claude Code gets installed natively too. `TOKIO_URL` makes
-  the question testable today without answering it — it is a way to try the
-  application, not the answer.
+- **`[doing]` Where Claude Code lives.** Not a WSL question — a topology
+  question, and WSL is one of three. All three are ordinary and all three have
+  to work:
+
+  | | Where the CLI is | Where the transcripts are |
+  |---|---|---|
+  | **Native** — Windows, macOS, Linux | on this system's PATH | this user's home |
+  | **Wrapped** | behind a version manager, a container, an `ssh` hop | wherever that lands |
+  | **WSL, app on Windows** | only as `wsl.exe -- claude` | `\\wsl$\<distro>\home\<user>\.claude` |
+
+  `[done]` **A command is a vector, not a name.** `claudeBin` was a string, so
+  there was nowhere to put `--`, a distro, or a host, and the second and third
+  rows could not be expressed at all. `src/claudeCli.ts` puts a `claudeLauncher`
+  prefix in front of it — `['wsl.exe', '--']` for WSL — and everything
+  downstream builds its arguments exactly as before. A prefix rather than a
+  shell string: handing a command line to a shell to be re-split is how a model
+  name with a metacharacter becomes something else. The prompt is safe either
+  way because it goes over stdin, but that is a property of today's `buildArgs`,
+  not a guarantee to build on.
+
+  `[done]` **The preflight no longer fails good setups.** `available()` checked
+  `existsSync(claudeBin)`, which cannot mean anything when the binary is
+  resolved on the far side of a launcher. Its separator test was `/` alone,
+  which never matches a Windows path, so an absolute one there went unchecked.
+
+  `[next]` **Detection.** The launcher exists; nothing sets it. First run should
+  look for Claude Code natively, then — on Windows — in WSL, and say what it
+  found rather than making the user discover the config key.
+
+  `[next]` **Transcripts across the boundary.** `\\wsl$` is reachable from
+  Windows but it is a 9p filesystem: chokidar will likely need polling, and
+  `~/.claude.json` for plan detection is over there too. `claudeConfigDir`
+  already exists to point at it.
+
+  `[open]` **Two installations at once.** Someone with Claude Code both natively
+  on Windows and inside WSL has two sets of transcripts and one account. Read
+  both and merge, or ask which? Nobody has decided, and the honest failure —
+  counting one machine's work twice — is the kind this project cares about.
+
+  `TOKIO_URL` remains a way to *try* the application across the boundary, not
+  the answer to any of the above.
 - **`[next]` Watching.** `chokidar` on Windows is fine for local paths; a
   `\\wsl$` path may need polling.
 - **`[next]` Tests on Windows.** The suite must pass there, under the same rule
