@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, useDashboard, type PeriodName, type Status, type ValueReport } from './api';
-import { Ring, pressureOf, type Pressure } from './Ring';
+import { Ring } from './Ring';
+import { readVerdict, turnCount } from './verdict';
 import { WindowStrip } from './WindowStrip';
 import { Compose } from './Compose';
 import { Queue } from './Queue';
@@ -8,89 +9,13 @@ import { Reveal } from './Reveal';
 import { Countdown } from './Countdown';
 import { Heatmap } from './Heatmap';
 import { Expand } from './Expand';
-import { clock, money, pct, until } from './format';
+import { clock, money, pct } from './format';
 import { useLang, localeOf, type Lang, type Translate } from './i18n';
 import { startSmoothScroll } from './smoothScroll';
-
-const HOUR = 3_600_000;
 
 /** "10 sep" — enough to place a reset without spelling out a whole date. */
 const dayMonth = (at: number, lang: Lang): string =>
   new Date(at).toLocaleDateString(localeOf(lang), { day: 'numeric', month: 'short' }).replace('.', '');
-
-/**
- * "9–24", "≤3" when even one expensive turn would not fit, or a single figure
- * when both ends agree.
- *
- * A range, not one number: a turn's cost varies by an order of magnitude with
- * what you ask for, and a single figure would hide that. The low end assumes
- * expensive turns, the high end typical ones.
- */
-function turnCount(few: number, many: number): string {
-  if (few >= many) return String(many);
-  if (few <= 0) return `≤${many}`;
-  return `${few}–${many}`;
-}
-
-interface Verdict {
-  line: string;
-  detail: string | null;
-  pressure: Pressure;
-  /** Where this pace lands by the reset, for the ring's second arc. */
-  projectedPct: number | null;
-}
-
-/**
- * Do I make it to the reset?
- *
- * The whole tool exists because that question used to be answerable only by
- * cross-reading a percentage, a burn rate and a clock. It is one sentence, and
- * it is the first thing on the page.
- */
-function readVerdict(status: Status, t: Translate): Verdict {
-  const { block, burnRate, now, exhaustionAt } = status;
-  const cap = block.cap.credits;
-
-  if (burnRate <= 0 || cap <= 0) {
-    // Idle: the useful thing is not how many dollars are left — nobody buys
-    // dollars — but how much more work fits. Counted in your own prompts, with
-    // the percentage as the fallback when there is too little history to say.
-    const room = status.headroom;
-    const line =
-      room === null
-        ? t('verdict.idle.pct', { pct: pct(100 - block.usedPct) })
-        : room.many <= 0
-          ? t('verdict.idle.none')
-          : t('verdict.idle.turns', { count: turnCount(room.few, room.many) });
-    return { line, detail: null, pressure: pressureOf(block.usedPct), projectedPct: null };
-  }
-
-  const hoursLeft = Math.max(0, (block.resetsAt - now) / HOUR);
-  const projectedPct = ((block.window.credits + burnRate * hoursLeft) / cap) * 100;
-
-  if (exhaustionAt && exhaustionAt < block.resetsAt) {
-    return {
-      line: t('verdict.dry', { time: clock(exhaustionAt) }),
-      detail: t('verdict.dry.detail', { until: until(block.resetsAt, exhaustionAt) }),
-      pressure: 'over',
-      projectedPct,
-    };
-  }
-  if (projectedPct >= 65) {
-    return {
-      line: t('verdict.tight'),
-      detail: t('verdict.tight.detail', { pct: pct(projectedPct) }),
-      pressure: 'tight',
-      projectedPct,
-    };
-  }
-  return {
-    line: t('verdict.clear'),
-    detail: t('verdict.clear.detail', { pct: pct(projectedPct) }),
-    pressure: 'ease',
-    projectedPct,
-  };
-}
 
 /** Everything true but not urgent. Present, one click away, never in the way. */
 function Details({ status, t, lang, onRefresh }: { status: Status; t: Translate; lang: Lang; onRefresh: () => void }) {
@@ -282,6 +207,7 @@ function Worth({ value, t, lang }: { value: ValueReport; t: Translate; lang: Lan
               used: money(month.usd),
               paid: money(month.paidUsd),
               rate: value.monthlyUsd === null ? '—' : money(value.monthlyUsd),
+              daily: value.dailyUsd === null ? '—' : money(value.dailyUsd),
             })}
           </p>
         </div>
@@ -389,7 +315,11 @@ export default function App() {
         </div>
 
         <div className="pace">
-          {status.block.window.events > 0 ? (
+          {/* Not "did this machine do anything": a window used from the browser,
+              or from another laptop, is still a window, and Anthropic's reading
+              knows its height even though no transcript here does. The strip is
+              shown whenever there is a shape to draw. */}
+          {status.traceSource === 'reported' || status.block.window.events > 0 ? (
             <WindowStrip status={status} t={t} />
           ) : (
             <p className="block-empty">{t('pace.idle')}</p>

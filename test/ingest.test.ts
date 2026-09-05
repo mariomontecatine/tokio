@@ -18,6 +18,24 @@ test('a streamed response repeated in the transcript is one billable event', () 
   assert.equal(unique.size, 3, 'but they collapse to three distinct responses');
 });
 
+test("Claude Code's own notices are not billable responses", () => {
+  // An "assistant" line with model "<synthetic>" is Claude Code talking, not the
+  // API: a login notice, an interruption. Zero tokens, so it never moved a
+  // total — but its timestamp was enough to open a five-hour window nobody was
+  // billed for, and to make an idle machine look busy.
+  const notice = JSON.stringify({
+    type: 'assistant',
+    timestamp: '2026-09-04T17:02:16.928Z',
+    sessionId: 's-1',
+    message: {
+      id: 'syn-1', model: '<synthetic>', role: 'assistant',
+      usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      content: [{ type: 'text', text: 'Login expired \u00b7 Please run /login' }],
+    },
+  });
+  assert.equal(parseEntry(notice, '/repo/demo'), null);
+});
+
 test('tool results do not start a new turn', () => {
   const turns = lines.map((l) => parseEntry(l, '/repo/demo')).filter((p) => p?.kind === 'turn');
   assert.deepEqual(turns.map((t: any) => t.promptId), ['p-1', 'p-2']);
@@ -57,6 +75,20 @@ test('provider-flavoured and dated model ids price the same as the plain one', (
   }
 });
 
+test('a dated id whose catalog entry is named differently is still found', () => {
+  // The catalog files these two under `-4-0`, but the ids Anthropic ships are
+  // dated, and the date is all that separates them from a name with no `-0` to
+  // match. They used to fall through to their family's newest tier, pricing a
+  // summer of Opus 4 at a third of what it cost.
+  const input = { ...MTOK, inputTokens: 1_000_000 };
+  assert.equal(resolveRates('claude-opus-4-20250514').basis, 'model');
+  assert.equal(creditsFor(input, 'claude-opus-4-20250514'), 15);
+  assert.equal(creditsFor(input, 'us.anthropic.claude-opus-4-20250514-v1:0'), 15);
+  assert.equal(creditsFor(input, 'claude-sonnet-4-20250514'), 3);
+  // Vertex's own spelling of Sonnet 3.5 carries a `-v2` the date strip leaves behind.
+  assert.equal(creditsFor(input, 'claude-3-5-sonnet-v2@20241022'), 3);
+});
+
 test('an unrecognised model falls back to its family, not to silence', () => {
   const input = { ...MTOK, inputTokens: 1_000_000 };
   assert.equal(resolveRates('claude-opus-99').basis, 'family');
@@ -72,6 +104,15 @@ test('fast mode, the US surcharge and web search all cost extra', () => {
   assert.equal(creditsFor(input, 'claude-opus-5', { inferenceGeo: 'us' }), 5.5);
   // Per-request charges sit outside the geo multiplier.
   assert.equal(creditsFor({ ...MTOK, webSearches: 10 }, 'claude-opus-5', { inferenceGeo: 'us' }), 0.1);
+});
+
+test('an unknown model in an expensive family is not priced as a cheap one', () => {
+  // Fable and Mythos are not families the plan meters separately, so nothing
+  // downstream groups by them — but they cost five times the middle tier, and a
+  // model newer than this file has to land somewhere honest.
+  const input = { ...MTOK, inputTokens: 1_000_000 };
+  assert.equal(creditsFor(input, 'claude-fable-9'), 10);
+  assert.equal(creditsFor(input, 'claude-mythos-9'), 10);
 });
 
 test('model families are recognised from full ids and aliases', () => {

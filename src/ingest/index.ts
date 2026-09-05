@@ -16,15 +16,46 @@ const INSERT = `INSERT OR IGNORE INTO events
   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
 
 /**
+ * How long to let file events pile up before reading anything.
+ *
+ * A live transcript is appended to several times a second, and every append is
+ * an event. Acting on each one meant a full pass over every transcript on the
+ * machine several times a second while you were working — the one moment it
+ * could least afford to. A tenth of a second of patience turns a burst into a
+ * single read, and is imperceptible next to the seconds a response takes.
+ */
+const SETTLE_MS = 100;
+
+/**
+ * The safety net, for the file events that never arrive.
+ *
+ * inotify is unreliable on WSL and on network mounts, which is why there is a
+ * sweep at all. It runs often while there is usage landing — that is when a
+ * stale number is worth something to you — and backs off to a slow tick when
+ * the machine has been quiet, where a sweep is work nobody asked for.
+ */
+const SWEEP_BUSY_MS = 5_000;
+const SWEEP_IDLE_MS = 30_000;
+const BUSY_FOR_MS = 2 * 60_000;
+
+/**
  * Watches Claude Code's transcripts and mirrors billable usage into SQLite.
  *
  * Emits `usage` whenever new events land, so the dashboard can push an update
  * instead of polling.
  */
 export class Ingestor extends EventEmitter {
-  private timer: NodeJS.Timeout | null = null;
+  private sweepTimer: NodeJS.Timeout | null = null;
+  private settleTimer: NodeJS.Timeout | null = null;
   private watcher: { close(): Promise<void> } | null = null;
   private scanning = false;
+  /** A change arrived mid-scan; whatever it was, it has not been read yet. */
+  private again = false;
+  /** Transcripts the watcher named. Empty with `sweepAll` set means "look at everything". */
+  private touched = new Set<string>();
+  private sweepAll = true;
+  private lastUsageAt = 0;
+  private stopped = false;
   private db: Db;
   private cfg: Config;
   /** Last seen turn per transcript, so a turn survives across incremental reads. */
@@ -36,12 +67,20 @@ export class Ingestor extends EventEmitter {
     this.cfg = cfg;
   }
 
-  /** Full pass over every transcript. Cheap after the first run: offsets mean each byte is read once. */
-  scan(): number {
+  /**
+   * Read what has been appended.
+   *
+   * With no argument this is a full pass over every transcript, which stays
+   * cheap after the first run because the stored offsets mean each byte is only
+   * ever read once. With one, it reads just the files the watcher named — the
+   * common case while you are working, and the difference between touching one
+   * file and stat-ing every session you have ever had.
+   */
+  scan(only?: string[]): number {
     if (this.scanning) return 0;
     this.scanning = true;
     try {
-      const files = discoverTranscripts(claudeDir(this.cfg));
+      const files = only ?? discoverTranscripts(claudeDir(this.cfg));
       const readOffset = this.db.prepare('SELECT offset FROM files WHERE path = ?');
       const saveOffset = this.db.prepare(
         `INSERT INTO files (path, offset, size, seenAt) VALUES (?,?,?,?)
@@ -102,34 +141,92 @@ export class Ingestor extends EventEmitter {
         }
         saveOffset.run(file, offset, size, Date.now());
       }
-      if (inserted > 0) this.emit('usage', inserted);
+      if (inserted > 0) {
+        this.lastUsageAt = Date.now();
+        this.emit('usage', inserted);
+      }
       return inserted;
     } finally {
       this.scanning = false;
     }
   }
 
+  /**
+   * Note that something changed, and read it once the burst is over.
+   *
+   * A file event during a scan is not lost: the scan already in flight may have
+   * passed that file, so the change is remembered and read on the next pass
+   * rather than waiting for the sweep to notice it minutes later.
+   */
+  private request(path?: string): void {
+    if (this.stopped) return;
+    if (path && path.endsWith('.jsonl')) this.touched.add(path);
+    else this.sweepAll = true;
+
+    if (this.scanning) {
+      this.again = true;
+      return;
+    }
+    if (this.settleTimer) return;
+    this.settleTimer = setTimeout(() => {
+      this.settleTimer = null;
+      this.drain();
+    }, SETTLE_MS);
+    this.settleTimer.unref();
+  }
+
+  private drain(): void {
+    const all = this.sweepAll;
+    const files = [...this.touched];
+    this.sweepAll = false;
+    this.touched.clear();
+    this.again = false;
+
+    this.scan(all || !files.length ? undefined : files);
+
+    if (this.again) this.request();
+  }
+
+  private sweepDelay(): number {
+    return Date.now() - this.lastUsageAt < BUSY_FOR_MS ? SWEEP_BUSY_MS : SWEEP_IDLE_MS;
+  }
+
+  private sweep = (): void => {
+    if (this.stopped) return;
+    this.sweepAll = true;
+    this.request();
+    this.sweepTimer = setTimeout(this.sweep, this.sweepDelay());
+    this.sweepTimer.unref();
+  };
+
   async start(): Promise<void> {
+    this.stopped = false;
     this.scan();
-    // chokidar catches the common case fast; the interval is the safety net for
-    // WSL and network mounts where inotify events are unreliable.
+    // chokidar catches the common case within a tenth of a second; the sweep is
+    // the safety net for WSL and network mounts, where inotify events are
+    // unreliable. No awaitWriteFinish: a transcript is appended to for as long
+    // as a response takes, so waiting for the writing to stop would hold every
+    // update back until the answer was over — and a half-written last line is
+    // already handled by reading only as far as the last newline.
     try {
       const { watch } = await import('chokidar');
       this.watcher = watch(join(claudeDir(this.cfg), 'projects'), {
         ignoreInitial: true,
         depth: 2,
-        awaitWriteFinish: { stabilityThreshold: 300, pollInterval: 100 },
-      }).on('all', () => this.scan()) as unknown as { close(): Promise<void> };
+      }).on('all', (_event: string, path?: string) => this.request(path)) as unknown as { close(): Promise<void> };
     } catch {
-      // chokidar is optional; the poll below is enough on its own.
+      // chokidar is optional; the sweep is enough on its own.
     }
-    this.timer = setInterval(() => this.scan(), 15_000);
-    this.timer.unref();
+    this.sweepTimer = setTimeout(this.sweep, this.sweepDelay());
+    this.sweepTimer.unref();
   }
 
   async stop(): Promise<void> {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.stopped = true;
+    if (this.sweepTimer) clearTimeout(this.sweepTimer);
+    if (this.settleTimer) clearTimeout(this.settleTimer);
+    this.sweepTimer = null;
+    this.settleTimer = null;
     await this.watcher?.close();
     this.watcher = null;
   }

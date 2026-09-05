@@ -1,6 +1,7 @@
 import type { Status } from './api';
 import type { Translate } from './i18n';
 import { clock } from './format';
+import { projectionOf, tracePaths, xOf, yOf, type Box, type StripInput } from './strip';
 
 // A viewBox close to the box it actually renders in, so it can scale uniformly.
 // Stretching it with preserveAspectRatio="none" would squash the clock labels
@@ -14,6 +15,7 @@ const Y_TOP = PAD.top;
 const Y_BOTTOM = H - PAD.bottom;
 
 const HOUR = 3_600_000;
+const BOX: Box = { x0: X0, x1: X1, yTop: Y_TOP, yBottom: Y_BOTTOM };
 
 interface Props {
   status: Status;
@@ -35,50 +37,32 @@ interface Props {
  * on a scale it could not be read at.
  */
 export function WindowStrip({ status, t }: Props) {
-  const { block, trace, now, burnRate } = status;
+  const { block, trace, traceSource, now, burnRate } = status;
   const start = block.window.start;
   const end = block.window.end;
-  const cap = block.cap.credits || 1;
   const hours = Math.round((end - start) / HOUR);
 
-  const x = (ts: number) => X0 + ((ts - start) / (end - start)) * (X1 - X0);
-  const y = (credits: number) => Y_BOTTOM - Math.min(1, Math.max(0, credits / cap)) * (Y_BOTTOM - Y_TOP);
+  // Everything the chart draws is a share of the window, and `usedPct` is the
+  // figure the ring is showing. They are not the same as this machine's credits
+  // and the difference is the whole point: credits are what tokio watched happen
+  // in a terminal here, the percentage is what the account has actually spent,
+  // wherever it was spent. A window used from the browser has a real height and
+  // no credits at all, and drawing the credits put a flat line under a ring
+  // reading 10%.
+  const input: StripInput = {
+    trace,
+    traceSource,
+    start,
+    end,
+    now,
+    usedPct: block.usedPct,
+    burnRate,
+    cap: block.cap.credits,
+  };
 
-  const spent = block.window.credits;
-  const nowX = Math.min(X1, Math.max(X0, x(now)));
-
-  // Stepped, because spend jumps when a response lands and is flat in between.
-  // Smoothing it would draw activity that never happened.
-  const steps: string[] = [`M ${X0} ${Y_BOTTOM}`];
-  let last = 0;
-  for (const point of trace) {
-    steps.push(`L ${x(point.t).toFixed(1)} ${y(last).toFixed(1)}`);
-    steps.push(`L ${x(point.t).toFixed(1)} ${y(point.c).toFixed(1)}`);
-    last = point.c;
-  }
-  steps.push(`L ${nowX.toFixed(1)} ${y(last).toFixed(1)}`);
-  const line = steps.join(' ');
-  const area = `${line} L ${nowX.toFixed(1)} ${Y_BOTTOM} Z`;
-
-  // The projection stops wherever it lands first: the cap, or the reset.
-  //
-  // Only while there is still cap left to run into. Past it the arithmetic
-  // gives a negative time — a crossing that already happened — and the line is
-  // drawn backwards, off the left of the chart. There is nothing to forecast at
-  // that point anyway: the window is spent, and the verdict says so in words.
-  let projection: { d: string; hitsCap: boolean; atX: number; atY: number } | null = null;
-  if (burnRate > 0 && spent < cap) {
-    const hoursToCap = (cap - spent) / burnRate;
-    const hoursToEnd = (end - now) / HOUR;
-    const hitsCap = hoursToCap < hoursToEnd;
-    const endT = now + Math.min(hoursToCap, hoursToEnd) * HOUR;
-    const endC = spent + burnRate * ((endT - now) / HOUR);
-    // Clamped regardless: a chart must not be able to draw outside itself,
-    // whatever the arithmetic above ever produces.
-    const atX = Math.max(nowX, Math.min(X1, x(endT)));
-    const atY = y(endC);
-    projection = { d: `M ${nowX.toFixed(1)} ${y(spent).toFixed(1)} L ${atX.toFixed(1)} ${atY.toFixed(1)}`, hitsCap, atX, atY };
-  }
+  const { line, area } = tracePaths(input, BOX);
+  const projection = projectionOf(input, BOX);
+  const nowX = xOf(now, input, BOX);
 
   // One line per hour boundary inside the window: `hours` bays, `hours - 1`
   // lines. Left unlabelled — the two ends carry the times, and six timestamps
@@ -109,7 +93,7 @@ export function WindowStrip({ status, t }: Props) {
           </>
         )}
 
-        <circle className="strip-now" cx={nowX} cy={y(spent)} r="4" />
+        <circle className="strip-now" cx={nowX} cy={yOf(block.usedPct, BOX)} r="4" />
 
         <text className="strip-axis" x={X0} y={Y_BOTTOM + 16} textAnchor="start">{clock(start)}</text>
         <text className="strip-axis" x={X1} y={Y_BOTTOM + 16} textAnchor="end">{clock(end)}</text>

@@ -32,6 +32,8 @@ eso no lo responde nadie.
 
 - **Una cola que se dispara al resetear.** Deja prompts apuntados. Se ejecutan en tu máquina, en
   tu repo, en cuanto vuelve la cuota — retomando la sesión exacta en la que estabas, si quieres.
+  Un prompt que todavía no se ha ejecutado sigue siendo un borrador: ábrelo en el panel y
+  reescríbelo, y lo que pegaste dentro se queda plegado en vez de volver a llenarte la caja.
 - **Un medidor con los números reales.** No una reconstrucción: `tokio` le pregunta a `/usage` del
   propio Claude Code por el porcentaje y la hora de reset de verdad, y añade lo que solo él puede
   calcular — tu ritmo de quemado y lo que va a costar una petición antes de lanzarla.
@@ -126,6 +128,13 @@ pasada la línea del reset son los trabajos esperando a la siguiente ventana.
 ![La tira de la ventana](docs/screenshots/strip.png)
 
 -->
+
+La tira se dibuja en porcentaje, a partir de las mismas lecturas que los anillos de arriba, así
+que cubre toda la cuenta: una ventana gastada entera en la app de Claude o en otro portátil
+también tiene altura aquí, muestreada cada pocos minutos en vez de turno a turno. Solo cuando no
+hay ninguna lectura que dibujar vuelve a reconstruir la forma desde los transcripts de esta
+máquina, y la fuente aparece en **Detalles**. La rentabilidad de abajo es lo contrario: solo
+puede contar transcripts, así que es un suelo.
 
 ## ¿Te está saliendo a cuenta la suscripción?
 
@@ -395,7 +404,7 @@ Opciones de `add`:
 | `planPriceUsd` | `null` | Cambia el precio mensual (precio regional, asiento de equipo) |
 | `reservePct` | `10` | Cuánto de la ventana te guardas |
 | `usagePollMs` | `180000` | Cada cuánto releer los porcentajes reales |
-| `usageMaxAgeMs` | `900000` | A partir de aquí la lectura caduca y se vuelve a estimar |
+| `usageMaxAgeMs` | `900000` | A partir de aquí la lectura caduca y se vuelve a estimar; también caduca en cuanto llega el reset que ella misma anunciaba |
 | `defaultSafety` | `edits` | Correa de los trabajos nuevos |
 | `weeklyAnchor` | `null` | `{ "weekday": 3, "hour": 11 }` — al ponerlo, el medidor semanal muestra un reset real en vez de una ventana rodante |
 | `concurrency` | `1` | Trabajos a la vez |

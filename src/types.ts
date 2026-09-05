@@ -67,13 +67,33 @@ export interface WindowStatus {
   source: 'reported' | 'estimated';
 }
 
+/**
+ * One sample of how far through the window spend had got.
+ *
+ * A percentage, not a dollar figure, because the strip is a picture of the
+ * window and the window is measured in percent by the only party that knows —
+ * and because a percentage is the one thing both sources can express. Spend
+ * made on another machine, or in the browser, never reaches this machine's
+ * transcripts; Anthropic's reading covers it.
+ */
+export interface TracePoint {
+  t: number;
+  pct: number;
+}
+
 export interface Status {
   now: number;
   plan: PlanId;
   /** Whether that plan was detected, set by hand, or could not be determined. */
   planBasis: 'detected' | 'configured' | 'unknown';
-  /** Cumulative spend through the current 5h window, for the strip chart. */
-  trace: { t: number; c: number }[];
+  /** How far through the window spend had got, sampled across it, for the strip chart. */
+  trace: TracePoint[];
+  /**
+   * Where the strip's shape came from, drawn the same way `WindowStatus.source`
+   * draws it: 'reported' is Anthropic's own percentage sampled over the window,
+   * 'estimated' is this machine's transcripts against a cap.
+   */
+  traceSource: 'reported' | 'estimated';
   reservePct: number;
   block: WindowStatus;
   week: WindowStatus;
@@ -102,6 +122,16 @@ export interface Job {
   id: string;
   provider: string;
   prompt: string;
+  /**
+   * The stretches of `prompt` that were pasted in rather than typed.
+   *
+   * Only ever presentation: what runs is `prompt`, whole. This is what lets the
+   * editor fold a two-hundred-line stack trace back down to one line instead of
+   * making someone scroll past it to reach the sentence they came to change.
+   * Null when nothing was pasted, or when the job came from somewhere that does
+   * not track it.
+   */
+  promptBlocks: string[] | null;
   cwd: string;
   model: string | null;
   safety: Safety;

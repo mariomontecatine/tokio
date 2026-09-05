@@ -9,7 +9,7 @@ import { createServer } from './server/index.ts';
 import { computeStatus, isRealReset } from './meter/index.ts';
 import { rememberReading } from './plans/calibrate.ts';
 import { notify } from './notify/index.ts';
-import { probeUsage } from './usage/probe.ts';
+import { nextProbeDelay, probeUsage } from './usage/probe.ts';
 import { dashboardUrl, isLoopback, onWsl } from './net.ts';
 import { saveProbe, pruneProbes } from './usage/store.ts';
 
@@ -47,7 +47,9 @@ export async function startDaemon(options: DaemonOptions = {}) {
   const ingestor = new Ingestor(db, cfg);
   const scheduler = new Scheduler(db, cfg, provider);
 
+  let lastUsageAt: number | null = null;
   ingestor.on('usage', () => {
+    lastUsageAt = Date.now();
     bus.emit('change');
     // New usage can free nothing, but it can flip a job from "doesn't fit" to
     // "fits" once a window rolls over, so re-evaluate on every batch.
@@ -57,13 +59,28 @@ export async function startDaemon(options: DaemonOptions = {}) {
 
   await ingestor.start();
   scheduler.start();
-  watchForReset(db, cfg, bus);
+
+  /**
+   * The last percentage we were told, so that work done off this machine still
+   * counts as work.
+   *
+   * `lastUsageAt` is set from the transcripts, which only ever see prompts typed
+   * into a terminal here. Someone working in the browser is idle by that
+   * measure, so the poll drops to its slow beat exactly while the number they
+   * care about is moving fastest. A percentage that went up is the same
+   * evidence, from the only source that has it.
+   */
+  let lastReportedPct: number | null = null;
 
   /** Ask Claude Code for the real percentages and tell the dashboard. */
   const refresh = async () => {
     const probe = await probeUsage(cfg);
     saveProbe(db, probe);
     pruneProbes(db);
+    if (probe.sessionPct !== null) {
+      if (lastReportedPct !== null && probe.sessionPct > lastReportedPct) lastUsageAt = Date.now();
+      lastReportedPct = probe.sessionPct;
+    }
     // Every usable reading also pins the cap, so the shipped guesses stop being
     // consulted after the first busy window. See plans/calibrate.ts.
     const status = computeStatus(db, cfg);
@@ -72,10 +89,34 @@ export async function startDaemon(options: DaemonOptions = {}) {
     bus.emit('change');
     return probe;
   };
+
+  // Self-scheduling rather than a fixed beat: see nextProbeDelay. The next read
+  // is chosen after each one, from what the last one said and what the queue is
+  // waiting for.
+  let poller: NodeJS.Timeout | null = null;
+  const pollAgain = (probe: { sessionResetsAt: number | null }) => {
+    // One chain, always. A reset triggers its own read, and without this that
+    // read would start a second chain alongside the first — a daemon that has
+    // been up a week would be polling a dozen times over.
+    if (poller) clearTimeout(poller);
+    const now = Date.now();
+    const queued = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued','deferred')").get() as { n: number }).n;
+    const delay = nextProbeDelay({ now, baseMs: cfg.usagePollMs, lastUsageAt, queued, resetsAt: probe.sessionResetsAt });
+    poller = setTimeout(() => void refresh().then(pollAgain), delay);
+    poller.unref();
+  };
+
   const first = await refresh();
   if (first.error) console.error(`tokio: warning — ${first.error}`);
-  const poller = setInterval(() => void refresh(), cfg.usagePollMs);
-  poller.unref();
+  pollAgain(first);
+
+  // A reset is the one moment queued work becomes runnable, so it starts the
+  // job, reads the real numbers again and says so — rather than waiting for
+  // whichever timer happened to be next.
+  watchForReset(db, cfg, bus, () => {
+    void scheduler.tick();
+    void refresh().then(pollAgain);
+  });
 
   const app = await createServer({ db, cfg, scheduler, onChange, refresh });
   await app.listen({ host: cfg.host, port: cfg.port });
@@ -88,7 +129,7 @@ export async function startDaemon(options: DaemonOptions = {}) {
   console.log(`  queue: ${status.queued} job(s)`);
 
   const shutdown = async () => {
-    clearInterval(poller);
+    if (poller) clearTimeout(poller);
     await ingestor.stop();
     scheduler.stop();
     await app.close();
@@ -121,13 +162,19 @@ function accessHints(cfg: Config): string[] {
  * by up to a minute between readings. Comparing it exactly would announce a
  * reset several times an hour; a real one moves the window by hours.
  */
-function watchForReset(db: ReturnType<typeof openDb>, cfg: Config, bus: EventEmitter): void {
+function watchForReset(
+  db: ReturnType<typeof openDb>,
+  cfg: Config,
+  bus: EventEmitter,
+  onReset: () => void,
+): void {
   let lastStart = computeStatus(db, cfg).block.window.start;
   const timer = setInterval(() => {
     const status = computeStatus(db, cfg);
     if (isRealReset(lastStart, status.block.window.start)) {
       lastStart = status.block.window.start;
       bus.emit('change');
+      onReset();
       if (status.queued > 0) {
         void notify(cfg, {
           title: 'tokio: window reset',

@@ -81,6 +81,52 @@ const EMPTY: Omit<UsageProbe, 'at' | 'error'> = {
 };
 
 /**
+ * Reading `/usage` costs no tokens, but it does cost a process.
+ *
+ * `claude -p "/usage"` spawns the whole CLI and takes a few seconds, so polling
+ * it on a fixed beat means a laptop that nobody is using still wakes up to ask
+ * a question whose answer has not changed since yesterday. Two things make an
+ * answer worth having, and both are knowable here: work landing (the number is
+ * moving) and work waiting (the number decides whether it starts).
+ *
+ * The reset is the exception that overrides the beat. It is the one instant the
+ * percentage is guaranteed to change — from whatever it was to nothing — and it
+ * is the moment a queue has been waiting hours for, so it is read a few seconds
+ * after it happens rather than up to a poll later.
+ */
+export interface ProbeTiming {
+  now: number;
+  /** The configured cadence, used while there is something to watch. */
+  baseMs: number;
+  /** When usage last landed, or null if it never has this run. */
+  lastUsageAt: number | null;
+  /** Jobs waiting on the answer. */
+  queued: number;
+  /** The reset we are currently expecting, if we know of one. */
+  resetsAt: number | null;
+}
+
+/** Long enough after a reset that the reported window is unambiguously the new one. */
+const AFTER_RESET_MS = 5_000;
+/** Never faster than this, whatever the arithmetic says. */
+const MIN_PROBE_MS = 15_000;
+/** And never slower, so a page left open overnight is not hours stale. */
+const MAX_PROBE_MS = 30 * 60_000;
+/** Usage this recent counts as "you are working". */
+const ACTIVE_FOR_MS = 5 * 60_000;
+
+export function nextProbeDelay(t: ProbeTiming): number {
+  const working = t.lastUsageAt !== null && t.now - t.lastUsageAt < ACTIVE_FOR_MS;
+  let delay = working || t.queued > 0 ? t.baseMs : t.baseMs * 4;
+  delay = Math.min(delay, MAX_PROBE_MS);
+
+  if (t.resetsAt !== null && t.resetsAt > t.now) {
+    delay = Math.min(delay, t.resetsAt + AFTER_RESET_MS - t.now);
+  }
+  return Math.max(MIN_PROBE_MS, delay);
+}
+
+/**
  * Ask Claude Code for the real numbers.
  *
  * `/usage` is a local command that queries Anthropic directly: it reports no

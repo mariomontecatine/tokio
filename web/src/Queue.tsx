@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { api, type Job, type Status } from './api';
 import type { Translate } from './i18n';
 import { Expand } from './Expand';
+import { JobEditor } from './JobEditor';
+import { summarize } from './pasted';
 import { money } from './format';
 
 interface Props {
@@ -12,6 +14,8 @@ interface Props {
 }
 
 const ACTIVE = new Set(['queued', 'deferred', 'running']);
+/** Everything that has not started yet, and so can still be changed. */
+const EDITABLE = new Set(['queued', 'deferred']);
 
 /** One line per job.
  *
@@ -24,6 +28,7 @@ const ACTIVE = new Set(['queued', 'deferred', 'running']);
 export function Queue({ jobs, status, onChange, t }: Props) {
   const [showDone, setShowDone] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
   const reasons = new Map(status.decisions.map((d) => [d.id, d.reason]));
 
   const visible = jobs.filter((job) => (showDone ? true : ACTIVE.has(job.status)));
@@ -57,15 +62,34 @@ export function Queue({ jobs, status, onChange, t }: Props) {
             const cost = job.actualCredits != null ? money(job.actualCredits) : `~${money(job.estimateP50 ?? 0)}`;
             return (
               <li key={job.id} className={`job${expanded ? ' open' : ''}`}>
-                <button className="job-row" onClick={() => setOpen(expanded ? null : job.id)} aria-expanded={expanded}>
+                <button
+                  className="job-row"
+                  onClick={() => {
+                    if (expanded) setEditing(null);
+                    setOpen(expanded ? null : job.id);
+                  }}
+                  aria-expanded={expanded}
+                >
                   <span className={`dot ${job.status}`} aria-hidden="true" />
                   <span className="job-chevron" aria-hidden="true" />
-                  <span className="job-prompt">{job.prompt.replace(/\s+/g, ' ').trim()}</span>
+                  <span className="job-prompt">{summarize(job.prompt, job.promptBlocks)}</span>
                   <span className="job-cost">{cost}</span>
                 </button>
 
                 <Expand open={expanded}>
                   <div className="job-detail">
+                    {editing === job.id ? (
+                      <JobEditor
+                        job={job}
+                        t={t}
+                        onSaved={() => {
+                          setEditing(null);
+                          onChange();
+                        }}
+                        onCancel={() => setEditing(null)}
+                      />
+                    ) : (
+                    <>
                     <dl>
                       <div>
                         <dt>{job.cwd.replace(/^.*\//, '')}</dt>
@@ -79,12 +103,17 @@ export function Queue({ jobs, status, onChange, t }: Props) {
                     {job.status !== 'done' && reasons.has(job.id) && <p className="job-reason">{reasons.get(job.id)}</p>}
                     {job.error && <p className="job-reason bad">{job.error}</p>}
                     <div className="job-actions">
+                      {EDITABLE.has(job.status) && (
+                        <button className="link" onClick={() => setEditing(job.id)}>{t('queue.edit')}</button>
+                      )}
                       {ACTIVE.has(job.status) && job.status !== 'running' && (
                         <button className="link" onClick={() => void act(api.runNow(job.id))}>{t('queue.runNow')}</button>
                       )}
                       <button className="link danger" onClick={() => void act(api.remove(job.id))}>{t('queue.remove')}</button>
                     </div>
                     {job.output && <pre className="job-output">{job.output}</pre>}
+                    </>
+                    )}
                   </div>
                 </Expand>
               </li>

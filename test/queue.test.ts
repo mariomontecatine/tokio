@@ -4,9 +4,12 @@ import { join } from 'node:path';
 import { openDb } from '../src/db.ts';
 import { loadConfig, type Config } from '../src/config.ts';
 import { createJob, getJob, requeueOrphans, updateJob } from '../src/queue/store.ts';
-import { Scheduler, decide } from '../src/queue/scheduler.ts';
+import { Scheduler, decide, nextWakeMs } from '../src/queue/scheduler.ts';
+import { checkPromptBlocks } from '../src/queue/blocks.ts';
+import { readJobFields } from '../src/queue/validate.ts';
 import { createClaudeCodeProvider, buildArgs, looksRateLimited } from '../src/providers/claudeCode.ts';
 import { computeStatus } from '../src/meter/index.ts';
+import { saveProbe } from '../src/usage/store.ts';
 import type { Job, Status } from '../src/types.ts';
 
 const FAKE = join(import.meta.dirname, 'fake-claude.sh');
@@ -174,4 +177,95 @@ test('limit messages are told apart from ordinary output', () => {
   assert.ok(looksRateLimited('Claude usage limit reached. Your limit will reset at 11pm'));
   assert.ok(looksRateLimited('429 rate_limit_error'));
   assert.equal(looksRateLimited('the tests pass and nothing is limited about them'), false);
+});
+
+test('a job queued for the reset starts once that reset has passed', () => {
+  // The whole point of the queue, and it sat there: at 19:00 the job still read
+  // "waiting for the window that opens at 18:49". `/usage` prints no session
+  // line while nothing is running, so the reading taken just before the reset
+  // stayed the newest one and kept the finished window looking current — full,
+  // and therefore with no room for the job that was waiting on it.
+  const { db, cfg } = setup();
+  const queuedAt = Date.parse('2026-09-04T13:50:00');
+  saveProbe(db, {
+    at: Date.parse('2026-09-04T18:48:00'),
+    sessionPct: 100, sessionResetsAt: Date.parse('2026-09-04T18:49:00'),
+    weekPct: 33, weekResetsAt: Date.parse('2026-09-05T20:59:00'),
+    opusPct: null, opusResetsAt: null, error: null,
+  });
+  const waiting = job({ runPolicy: 'on-reset', createdAt: queuedAt });
+
+  const before = Date.parse('2026-09-04T18:48:30');
+  assert.equal(decide(db, cfg, waiting, computeStatus(db, cfg, before), before).run, false, 'not while the window it was queued in is still open');
+
+  const after = Date.parse('2026-09-04T19:00:00');
+  const now = decide(db, cfg, waiting, computeStatus(db, cfg, after), after);
+  assert.equal(now.run, true, now.reason);
+});
+
+test('a prompt keeps a record of what was pasted into it, and only what really is', () => {
+  const paste = 'Traceback:\n' + 'at frame\n'.repeat(40);
+  const prompt = `${paste}\n\nfix this`;
+  const { db } = setup();
+  const created = createJob(db, { prompt, promptBlocks: [paste], cwd: process.cwd(), safety: 'edits' });
+  assert.deepEqual(getJob(db, created.id)!.promptBlocks, [paste]);
+
+  // A block that is not in the prompt would fold away text the job does not
+  // contain, so the whole set goes rather than half of it.
+  assert.equal(checkPromptBlocks(prompt, ['something else']), null);
+  assert.equal(checkPromptBlocks(prompt, [paste, 'nor this']), null);
+  assert.deepEqual(checkPromptBlocks(prompt, [paste]), [paste]);
+  assert.equal(checkPromptBlocks(prompt, []), null);
+});
+
+test('the queue refuses instructions it cannot carry out', () => {
+  // Each of these used to be stored as given and then quietly change what ran:
+  // an unknown safety mode dropped --permission-mode altogether, and a job
+  // scheduled for no particular time waited for 1970.
+  assert.equal(readJobFields({ safety: 'yolo' }).ok, false);
+  assert.equal(readJobFields({ runPolicy: 'whenever' }).ok, false);
+  assert.equal(readJobFields({ runPolicy: 'at' }).ok, false);
+  assert.equal(readJobFields({ prompt: '   ' }).ok, false);
+  assert.equal(readJobFields({ status: 'done' }).ok, false, 'only the scheduler says a job is done');
+
+  const scheduled = readJobFields({ runPolicy: 'at', runAt: '2026-09-05T10:00:00Z' });
+  assert.ok(scheduled.ok && scheduled.value.runAt === Date.parse('2026-09-05T10:00:00Z'));
+
+  // Changing only the time of an already-scheduled job is enough on its own.
+  const timeOnly = readJobFields({ runAt: 1 }, { runPolicy: 'at', runAt: 2 });
+  assert.ok(timeOnly.ok && timeOnly.value.runAt === 1);
+
+  // And moving off "at a time" takes the time with it.
+  const relaxed = readJobFields({ runPolicy: 'on-reset' }, { runPolicy: 'at', runAt: 2 });
+  assert.ok(relaxed.ok && relaxed.value.runAt === null);
+});
+
+test('the scheduler waits for the next thing that matters, not for a fixed beat', () => {
+  const now = Date.now();
+  const status = statusWith(90);
+  const soon = job({ runPolicy: 'at', runAt: now + 4_000 });
+
+  assert.equal(nextWakeMs(status, [], now), 30_000, 'nothing queued, nothing to hurry for');
+  assert.equal(nextWakeMs(status, [soon], now), 4_000, 'a job with a time is woken for at its time');
+  // The reset is an hour out in this fixture, so the heartbeat still wins.
+  assert.equal(nextWakeMs(status, [job()], now), 30_000);
+
+  const resetting = statusWith(90);
+  resetting.block.resetsAt = now + 9_000;
+  assert.equal(nextWakeMs(resetting, [job()], now), 10_000, 'a second past the reset');
+  // A time a hundred milliseconds out still gets a whole second: the job it is
+  // waiting for cannot start any sooner, and a queue must never spin.
+  assert.equal(nextWakeMs(status, [job({ runPolicy: 'at', runAt: now + 100 })], now), 1_000);
+});
+
+test('a run in flight cannot be edited out from under itself', async () => {
+  const { db, cfg, scheduler } = setup();
+  const created = createJob(db, { prompt: 'first', cwd: process.cwd(), safety: 'edits', runPolicy: 'manual' });
+
+  // Editing before it starts is the point of the queue: the run picks up the
+  // row as it stands, not the copy whoever scheduled it was holding.
+  updateJob(db, created.id, { prompt: 'second' });
+  await scheduler.run(created);
+  assert.equal(getJob(db, created.id)!.prompt, 'second');
+  assert.equal(cfg.claudeBin, FAKE);
 });

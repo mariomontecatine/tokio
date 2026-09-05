@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db.ts';
 import type { Job, JobStatus, RunPolicy, Safety } from '../types.ts';
+import { decodeBlocks, encodeBlocks } from './blocks.ts';
 
 export interface NewJob {
   prompt: string;
+  /** The stretches of `prompt` that were pasted. See queue/blocks.ts. */
+  promptBlocks?: string[] | null;
   cwd: string;
   model?: string | null;
   safety: Safety;
@@ -18,24 +21,25 @@ export interface NewJob {
   estimateBasis?: string | null;
 }
 
-const COLUMNS = `id, provider, prompt, cwd, model, safety, resumeSessionId, runPolicy, runAt,
+const COLUMNS = `id, provider, prompt, promptBlocks, cwd, model, safety, resumeSessionId, runPolicy, runAt,
   priority, urgent, status, estimateP50, estimateP90, estimateBasis, actualCredits,
   resultSessionId, output, error, attempts, createdAt, startedAt, finishedAt`;
 
 function hydrate(row: any): Job {
-  return { ...row, urgent: Boolean(row.urgent) } as Job;
+  return { ...row, urgent: Boolean(row.urgent), promptBlocks: decodeBlocks(row.promptBlocks) } as Job;
 }
 
 export function createJob(db: Db, input: NewJob): Job {
   const id = randomUUID().slice(0, 8);
   db.prepare(
-    `INSERT INTO jobs (id, provider, prompt, cwd, model, safety, resumeSessionId, runPolicy, runAt,
+    `INSERT INTO jobs (id, provider, prompt, promptBlocks, cwd, model, safety, resumeSessionId, runPolicy, runAt,
       priority, urgent, status, estimateP50, estimateP90, estimateBasis, createdAt)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     id,
     input.provider ?? 'claude-code',
     input.prompt,
+    encodeBlocks(input.promptBlocks ?? null),
     input.cwd,
     input.model ?? null,
     input.safety,
@@ -73,12 +77,27 @@ export function pendingJobs(db: Db): Job[] {
   return listJobs(db, ['queued', 'deferred']);
 }
 
+/**
+ * The columns an update may touch.
+ *
+ * `updateJob` builds its SET clause from the keys it is handed, so this is what
+ * stops a stray one becoming a fragment of SQL. The API's own allow-list is the
+ * first line of that defence; this is the one that holds when a caller goes
+ * straight to the store.
+ */
+const WRITABLE = new Set<string>([
+  'provider', 'prompt', 'promptBlocks', 'cwd', 'model', 'safety', 'resumeSessionId', 'runPolicy', 'runAt',
+  'priority', 'urgent', 'status', 'estimateP50', 'estimateP90', 'estimateBasis', 'actualCredits',
+  'resultSessionId', 'output', 'error', 'attempts', 'startedAt', 'finishedAt',
+]);
+
 export function updateJob(db: Db, id: string, patch: Partial<Job>): Job | null {
-  const keys = Object.keys(patch).filter((k) => k !== 'id');
+  const keys = Object.keys(patch).filter((k) => WRITABLE.has(k));
   if (!keys.length) return getJob(db, id);
   const set = keys.map((k) => `${k} = ?`).join(', ');
   const values = keys.map((k) => {
     const v = (patch as any)[k];
+    if (k === 'promptBlocks') return encodeBlocks((v as string[] | null) ?? null);
     return typeof v === 'boolean' ? (v ? 1 : 0) : v;
   });
   db.prepare(`UPDATE jobs SET ${set} WHERE id = ?`).run(...(values as []), id);

@@ -4,7 +4,7 @@ import type { Config } from '../config.ts';
 import type { Job, Status } from '../types.ts';
 import type { Provider } from '../providers/types.ts';
 import { computeStatus } from '../meter/index.ts';
-import { listJobs, pendingJobs, requeueOrphans, updateJob } from './store.ts';
+import { getJob, listJobs, pendingJobs, requeueOrphans, updateJob } from './store.ts';
 import { predict } from '../estimator/predict.ts';
 import { recordOutcome } from '../estimator/learn.ts';
 import { addCeiling } from '../plans/calibrate.ts';
@@ -12,6 +12,11 @@ import { notify } from '../notify/index.ts';
 
 const MAX_ATTEMPTS = 5;
 const OUTPUT_LIMIT = 40_000;
+
+/** How long the scheduler will ever sleep with nothing else to wait for. */
+const HEARTBEAT_MS = 30_000;
+/** And the shortest, so a queue can never spin. */
+const MIN_WAKE_MS = 1_000;
 
 export interface Decision {
   job: Job;
@@ -62,11 +67,31 @@ export function decide(db: Db, cfg: Config, job: Job, status: Status, now = Date
   return { job, run: true, reason: policy.reason };
 }
 
+/**
+ * How long to wait before looking again.
+ *
+ * Exported because it is the whole of the queue's timing, and timing is the one
+ * thing a queue is judged on.
+ */
+export function nextWakeMs(status: Status, pending: Job[], now: number): number {
+  let at = now + HEARTBEAT_MS;
+  if (pending.length) {
+    // The reset is the moment the queue exists for. A second past it, so the
+    // window that gets recomputed is unambiguously the new one.
+    if (status.block.resetsAt > now) at = Math.min(at, status.block.resetsAt + 1_000);
+    for (const job of pending) {
+      if (job.runPolicy === 'at' && job.runAt && job.runAt > now) at = Math.min(at, job.runAt);
+    }
+  }
+  return Math.max(MIN_WAKE_MS, at - now);
+}
+
 export class Scheduler extends EventEmitter {
   private db: Db;
   private cfg: Config;
   private provider: Provider;
   private timer: NodeJS.Timeout | null = null;
+  private stopped = false;
   private running = new Set<string>();
 
   constructor(db: Db, cfg: Config, provider: Provider) {
@@ -76,25 +101,39 @@ export class Scheduler extends EventEmitter {
     this.provider = provider;
   }
 
-  /** Why each pending job is or isn't running — this is what the dashboard shows. */
-  explain(): Decision[] {
-    const status = computeStatus(this.db, this.cfg);
+  /**
+   * Why each pending job is or isn't running — this is what the dashboard shows.
+   *
+   * Takes the status the caller already has where there is one. `/api/status`
+   * asks for both in the same breath, and rebuilding it here meant every load
+   * of the dashboard replayed a fortnight of events twice over.
+   */
+  explain(status = computeStatus(this.db, this.cfg)): Decision[] {
     return pendingJobs(this.db).map((job) => decide(this.db, this.cfg, job, status));
   }
 
   async tick(): Promise<void> {
-    if (this.running.size >= this.cfg.concurrency) return;
     const status = computeStatus(this.db, this.cfg);
-    for (const job of pendingJobs(this.db)) {
-      if (this.running.size >= this.cfg.concurrency) break;
-      if (this.running.has(job.id)) continue;
-      const decision = decide(this.db, this.cfg, job, status, status.now);
-      if (decision.run) void this.run(job);
+    const pending = pendingJobs(this.db);
+    try {
+      for (const job of pending) {
+        if (this.running.size >= this.cfg.concurrency) break;
+        if (this.running.has(job.id)) continue;
+        const decision = decide(this.db, this.cfg, job, status, status.now);
+        if (decision.run) void this.run(job);
+      }
+    } finally {
+      this.rearm(status, pending);
     }
   }
 
   async run(job: Job): Promise<void> {
     if (this.running.has(job.id)) return;
+    // The row, not the copy the caller was holding. Between a decision and this
+    // line the prompt can have been edited from the dashboard, and running the
+    // version that was on screen a moment ago is exactly the surprise the edit
+    // was meant to avoid.
+    job = getJob(this.db, job.id) ?? job;
     this.running.add(job.id);
     const startedAt = Date.now();
     const before = computeStatus(this.db, this.cfg, startedAt);
@@ -158,15 +197,32 @@ export class Scheduler extends EventEmitter {
   }
 
   start(): void {
+    this.stopped = false;
     requeueOrphans(this.db);
-    this.timer = setInterval(() => void this.tick(), 30_000);
-    this.timer.unref();
     void this.tick();
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  /**
+   * Sleep until the next thing that could change an answer.
+   *
+   * A fixed thirty-second beat is fine as a floor and wrong as a ceiling: a job
+   * asked to start at 21:00 would start somewhere in the following half minute,
+   * and the reset the whole queue is waiting for would land whenever the beat
+   * next happened to fall. Both are moments we know in advance, so they are
+   * waited for exactly, and the heartbeat stays as the backstop for everything
+   * we don't know about.
+   */
+  private rearm(status: Status, pending: Job[]): void {
+    if (this.timer) clearTimeout(this.timer);
+    if (this.stopped) return;
+    this.timer = setTimeout(() => void this.tick(), nextWakeMs(status, pending, Date.now()));
+    this.timer.unref();
   }
 
   get busy(): string[] {

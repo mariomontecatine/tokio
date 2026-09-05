@@ -7,6 +7,7 @@ import {
   fastModeRates,
   normalizeModelId,
   type Rates,
+  type TierName,
 } from './catalog.ts';
 
 export type { Rates } from './catalog.ts';
@@ -28,6 +29,22 @@ export function familyOf(model: string | undefined | null): ModelFamily {
   if (m.includes('sonnet')) return 'sonnet';
   if (m.includes('haiku')) return 'haiku';
   return 'unknown';
+}
+
+/**
+ * The tier an unrecognised model falls back to.
+ *
+ * `familyOf` only knows the three families that a plan meters separately, but
+ * the catalog prices two more — Fable and Mythos — and they are the expensive
+ * ones. Charging an unknown `claude-fable-6` at the middle tier would understate
+ * it fivefold, so the fallback reads the family off the name here even where
+ * nothing downstream groups by it.
+ */
+function fallbackTier(model: string | undefined | null): TierName {
+  const name = (model ?? '').toLowerCase();
+  if (name.includes('fable')) return FAMILY_FALLBACK.fable;
+  if (name.includes('mythos')) return FAMILY_FALLBACK.mythos;
+  return FAMILY_FALLBACK[familyOf(model)];
 }
 
 /** How a set of rates was arrived at, so callers can tell a match from a guess. */
@@ -55,7 +72,7 @@ export function resolveRates(model: string | undefined | null, speed?: string | 
   const tier = MODEL_TIER[id];
   if (tier) return { rates: TIERS[tier], basis: 'model' };
 
-  return { rates: TIERS[FAMILY_FALLBACK[familyOf(model)]], basis: 'family' };
+  return { rates: TIERS[fallbackTier(model)], basis: 'family' };
 }
 
 export function ratesFor(model: string | undefined | null, speed?: string | null): Rates {

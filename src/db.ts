@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   id              TEXT PRIMARY KEY,
   provider        TEXT NOT NULL DEFAULT 'claude-code',
   prompt          TEXT NOT NULL,
+  -- Which stretches of the prompt arrived as a paste, as JSON. Presentation,
+  -- not content: the prompt is the whole of what runs, and this only decides
+  -- what stays folded when someone opens it again. See queue/blocks.ts.
+  promptBlocks    TEXT,
   cwd             TEXT NOT NULL,
   model           TEXT,
   safety          TEXT NOT NULL,
@@ -133,7 +137,7 @@ CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
  * only apply to future transcripts and leave months of history priced at the
  * old numbers — with nothing on screen to say which was which.
  */
-const PRICING_VERSION = '3';
+const PRICING_VERSION = '4';
 
 let cached: Db | null = null;
 
@@ -146,6 +150,7 @@ export function openDb(path?: string): Db {
   db.exec('PRAGMA busy_timeout = 5000');
   db.exec(SCHEMA);
   addMissingColumns(db);
+  dropSyntheticEvents(db);
   repriceEvents(db);
   if (!path) cached = db;
   return db;
@@ -153,17 +158,40 @@ export function openDb(path?: string): Db {
 
 /** Columns added after the first release, for databases that predate them. */
 function addMissingColumns(db: Db): void {
-  const columns = new Set(
-    (db.prepare('PRAGMA table_info(events)').all() as unknown as { name: string }[]).map((c) => c.name),
-  );
-  const wanted: [string, string][] = [
-    ['webSearches', "INTEGER NOT NULL DEFAULT 0"],
-    ['speed', "TEXT NOT NULL DEFAULT 'standard'"],
-    ['inferenceGeo', "TEXT NOT NULL DEFAULT ''"],
-  ];
-  for (const [name, decl] of wanted) {
-    if (!columns.has(name)) db.exec(`ALTER TABLE events ADD COLUMN ${name} ${decl}`);
+  const wanted: Record<string, [string, string][]> = {
+    events: [
+      ['webSearches', 'INTEGER NOT NULL DEFAULT 0'],
+      ['speed', "TEXT NOT NULL DEFAULT 'standard'"],
+      ['inferenceGeo', "TEXT NOT NULL DEFAULT ''"],
+    ],
+    jobs: [['promptBlocks', 'TEXT']],
+  };
+  for (const [table, columns] of Object.entries(wanted)) {
+    const present = new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((c) => c.name),
+    );
+    for (const [name, decl] of columns) {
+      if (!present.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${decl}`);
+    }
   }
+}
+
+/**
+ * Forget the messages Claude Code wrote itself.
+ *
+ * `<synthetic>` is the model name it puts on its own notices — "Login expired",
+ * "No response requested" — which land in the transcript as assistant turns
+ * with an all-zero usage block. The ingestor skips them now; this clears the
+ * ones already stored. They never cost anything, but they carry a timestamp,
+ * and a timestamp is all it takes to open a five-hour window that Anthropic
+ * never opened.
+ */
+function dropSyntheticEvents(db: Db): void {
+  // Once. Nothing writes them any more, so re-scanning the table on every
+  // `tokio status` would be a full pass over a year of events to delete nothing.
+  if (getKv(db, 'syntheticPurged') === '1') return;
+  db.prepare("DELETE FROM events WHERE model = '<synthetic>'").run();
+  setKv(db, 'syntheticPurged', '1');
 }
 
 /**

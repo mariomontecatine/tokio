@@ -51,12 +51,24 @@ export function buildBlocks(events: BlockInput[], blockHours = 5, notBefore: num
   return blocks;
 }
 
-/** The block `now` falls inside, or an empty block starting now if the last one has expired. */
+/**
+ * The block `now` falls inside, or an empty one when the last has expired.
+ *
+ * The empty block is a guess either way — Anthropic's window opens with your
+ * next message, not on a schedule — so it is anchored to the last reset we were
+ * actually told about while that reset is still within a window's reach, and
+ * only falls back to the current hour when it is not. Anchoring it to the hour
+ * regardless made the guess *move*: an idle machine's window start crept
+ * forward every hour, dragging the reset time on screen with it and tripping
+ * the reset watcher into announcing a rollover once an hour.
+ */
 export function activeBlock(blocks: Window[], now: number, blockHours = 5, notBefore: number | null = null): Window {
   const span = blockHours * HOUR;
   const last = blocks[blocks.length - 1];
   if (last && now < last.end) return { ...last, active: true };
-  const anchored = floorToHour(now);
-  const start = notBefore !== null ? Math.max(anchored, notBefore) : anchored;
+  let start = floorToHour(now);
+  if (notBefore !== null) {
+    start = notBefore <= now && now < notBefore + span ? notBefore : Math.max(start, notBefore);
+  }
   return { start, end: start + span, credits: 0, opusCredits: 0, events: 0, lastActivity: null, active: false };
 }

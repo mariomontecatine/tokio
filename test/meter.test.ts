@@ -62,13 +62,27 @@ test('a percentage read off /usage pins the real cap', () => {
   assert.equal(cap.basis, 'calibrated');
 });
 
-test('several readings are reduced to their median', () => {
+test('several readings are reduced to their top, because each one is only a floor', () => {
   const db = openDb(':memory:');
   const cfg = loadConfig();
+  // The same percentage against three different amounts of locally counted
+  // spend. The low two are windows the account was also being used from
+  // somewhere this machine cannot see — the percentage counted that work, the
+  // credits did not. Contamination only ever shrinks the implied cap, so the
+  // largest reading is the least contaminated one, and a median would enshrine
+  // the sharing as the cap.
   addAnchor(db, 'block', 50, 40);   // 80
   addAnchor(db, 'block', 50, 45);   // 90
   addAnchor(db, 'block', 50, 50);   // 100
-  assert.equal(resolveCap(db, cfg, 'block').credits, 90);
+  assert.equal(resolveCap(db, cfg, 'block').credits, 100);
+});
+
+test('but one freak reading does not set the cap for a month', () => {
+  const db = openDb(':memory:');
+  const cfg = loadConfig();
+  for (let i = 0; i < 9; i += 1) addAnchor(db, 'block', 50, 50);  // 100 each
+  addAnchor(db, 'block', 20, 400);                                // 2000
+  assert.equal(resolveCap(db, cfg, 'block').credits, 100, 'the top of the distribution, not its maximum');
 });
 
 test('a limit we actually hit raises a too-low default', () => {

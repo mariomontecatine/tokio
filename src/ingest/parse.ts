@@ -15,6 +15,9 @@ interface RawUsage {
   inference_geo?: string | null;
 }
 
+/** What Claude Code calls a message it generated itself, rather than one the API billed. */
+const SYNTHETIC_MODEL = '<synthetic>';
+
 export type ParsedEntry =
   | { kind: 'usage'; event: Omit<UsageEvent, 'turnId'> }
   | { kind: 'turn'; promptId: string; chars: number; ts: number }
@@ -80,6 +83,12 @@ export function parseEntry(line: string, fallbackProject: string): ParsedEntry {
   const message = entry.message;
   const usage: RawUsage | undefined = message?.usage;
   if (!usage || !message?.id) return null;
+  // Claude Code writes its own messages into the transcript as assistant turns
+  // under this model name — "Login expired", "No response requested" — with an
+  // all-zero usage block. They cost nothing, so they never moved a total, but
+  // they carry a timestamp, and a timestamp is enough to open a five-hour
+  // window that Anthropic never opened.
+  if (message.model === SYNTHETIC_MODEL) return null;
 
   const cacheCreation = usage.cache_creation ?? {};
   const w5 = cacheCreation.ephemeral_5m_input_tokens ?? 0;

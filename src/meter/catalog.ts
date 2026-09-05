@@ -99,10 +99,12 @@ export function fastModeRates(normalizedId: string): Rates | null {
  * tier, which bounds the error in both directions instead of wildly over- or
  * under-counting.
  */
-export const FAMILY_FALLBACK: Record<ModelFamily, TierName> = {
+export const FAMILY_FALLBACK: Record<ModelFamily | 'fable' | 'mythos', TierName> = {
   opus: 'tier_5_25',
   sonnet: 'tier_2_10',
   haiku: 'haiku_45',
+  fable: 'tier_10_50_cache_read_0_25',
+  mythos: 'tier_10_50_cache_read_0_25',
   unknown: 'tier_3_15',
 };
 
@@ -110,20 +112,58 @@ export const FAMILY_FALLBACK: Record<ModelFamily, TierName> = {
 export const US_INFERENCE_SURCHARGE = 1.1;
 
 /**
+ * Spellings that name a model the catalog files under something else.
+ *
+ * Opus 4 and Sonnet 4 are the ones that matter. The catalog calls them
+ * `claude-opus-4-0` and `claude-sonnet-4-0`, but the ids Anthropic actually
+ * ships are dated — `claude-opus-4-20250514` — and once the date comes off
+ * there is no `-0` to match on. They fell through to their family's newest
+ * tier, which priced a summer of Opus 4 at $5/$25 instead of $15/$75: a third
+ * of what it really cost, silently.
+ */
+export const MODEL_ALIASES: Record<string, string> = {
+  'claude-opus-4': 'claude-opus-4-0',
+  'claude-sonnet-4': 'claude-sonnet-4-0',
+};
+
+/**
+ * The part of an id that names the model itself.
+ *
+ * Both spellings Anthropic has used: family first (`claude-opus-4-5`) and
+ * version first (`claude-3-5-sonnet`). The `(?!\d)` guards are the load-bearing
+ * part — without them `claude-opus-4-20250514` reads its date as a minor
+ * version and comes out as "Opus 4.20".
+ */
+const BASE_ID =
+  /^claude-[a-z]+-\d{1,2}(?!\d)(?:-\d{1,2}(?!\d))?|^claude-\d{1,2}(?!\d)(?:-\d{1,2}(?!\d))?-[a-z]+/;
+
+/**
+ * Everything that can follow the name without changing which model it is: a
+ * dated snapshot, a Bedrock or Vertex version, `-fast`, `-latest`.
+ */
+const SAME_MODEL_TRAILER =
+  /^(?:-fast|-latest)?(?:-v\d{1,3}@\d{8}|[-@]\d{8})?(?:-v\d{1,3}(?::\d{1,3})?)?$/;
+
+/**
  * Strip a model id down to the key this catalog uses.
  *
  * Transcripts carry whatever the provider called the model: a dated snapshot
  * (`claude-opus-4-5-20251101`), a Bedrock id (`us.anthropic.claude-…-v1:0`), a
- * Vertex id (`claude-opus-4-5@20251101`), or a `[1m]` long-context suffix. They
- * are all the same model at the same price.
+ * Vertex id (`claude-3-5-sonnet-v2@20241022`), a gateway's `vendor/model`, or a
+ * `[1m]` long-context suffix. They are all the same model at the same price.
+ *
+ * A trailer is only dropped when the whole of it is recognisable as one of
+ * those, so an id we have genuinely never seen keeps its full name and is
+ * priced — and reported — as the family guess it is.
  */
 export function normalizeModelId(model: string): string {
   let id = model.trim().toLowerCase();
-  id = id.replace(/\[[12]m\]$/, '');
-  id = id.replace(/^(?:us|eu|apac|global)\./, '');
-  id = id.replace(/^anthropic\./, '');
-  id = id.replace(/-v\d+:\d+$/, '');
-  id = id.replace(/@\d{8}$/, '');
-  id = id.replace(/-\d{8}$/, '');
-  return id;
+  id = id.replace(/\[[12]m\]/g, '');
+  id = id.slice(id.lastIndexOf('/') + 1);
+  id = id.replace(/^(?:[a-z0-9-]+\.)?anthropic\./, '');
+
+  const base = BASE_ID.exec(id)?.[0];
+  if (base && SAME_MODEL_TRAILER.test(id.slice(base.length))) id = base;
+
+  return MODEL_ALIASES[id] ?? id;
 }
