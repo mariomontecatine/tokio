@@ -34,11 +34,36 @@ export function defaultCap(cfg: Config, kind: WindowKind): number | null {
 const ANCHOR_TTL_MS = 30 * 24 * 3_600_000;
 
 /**
+ * An anchor is a floor, not a measurement.
+ *
+ * It divides the credits *this machine* counted by a percentage covering
+ * *the whole account*. Every prompt sent from claude.ai, from a phone, or from
+ * another laptop moves the percentage and leaves no credits here, so the
+ * division comes out small — and it can only ever come out small, because this
+ * machine's spend is a subset of the account's. Contamination has a direction.
+ *
+ * So the estimator is the top of the distribution rather than its middle. The
+ * median asks "what does a typical window imply", and every window shared with
+ * a browser drags it down; the top asks "how large has this window ever had to
+ * be", which is the question with an answer. The real damage was not a slightly
+ * low cap: `advanceReported` divides live spend by it, so a cap four times too
+ * small turned twelve minutes of Opus into fifty-three points and reported a
+ * window as spent while Anthropic was still reporting 75%.
+ *
+ * The ninetieth percentile rather than the outright maximum, so that one freak
+ * reading — a mispriced model, a reset landing mid-division — cannot set the
+ * cap for a month on its own.
+ */
+function highAnchor(caps: number[]): number {
+  const at = Math.min(caps.length - 1, Math.max(0, Math.ceil(caps.length * 0.9) - 1));
+  return caps[at]!;
+}
+
+/**
  * Best available cap for a window.
  *
  * Calibration anchors win: each one is a direct reading of "Claude Code says
- * I'm at N%", which pins the cap exactly. The median of recent anchors absorbs
- * the rounding in that displayed percentage. Failing that, a limit we actually
+ * I'm at N%" against the spend we counted. Failing that, a limit we actually
  * hit is a hard lower bound, so the default is raised to meet it.
  */
 export function resolveCap(db: Db, cfg: Config, kind: WindowKind): Cap {
@@ -49,9 +74,7 @@ export function resolveCap(db: Db, cfg: Config, kind: WindowKind): Cap {
     .all(kind, since) as { impliedCap: number }[];
 
   if (rows.length) {
-    const mid = Math.floor(rows.length / 2);
-    const median = rows.length % 2 ? rows[mid]!.impliedCap : (rows[mid - 1]!.impliedCap + rows[mid]!.impliedCap) / 2;
-    return { credits: median, basis: 'calibrated', anchors: rows.length };
+    return { credits: highAnchor(rows.map((r) => r.impliedCap)), basis: 'calibrated', anchors: rows.length };
   }
 
   const ceiling = db

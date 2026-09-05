@@ -772,6 +772,35 @@ html { scroll-behavior: smooth; }
   word-break: break-word;
 }
 
+/* ---------- editing a queued job ---------- */
+
+/* The editor takes the row's place rather than sitting under it: two copies of
+   the same prompt, one editable and one not, is the layout that makes people
+   wonder which one is real. */
+.job-editor { padding-bottom: 4px; }
+
+.job-editor .compose-field { margin-bottom: 10px; }
+
+.job-editor-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.job-editor-bar select {
+  appearance: none;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.job-editor-bar select:focus { outline: none; border-color: var(--ink-faint); }
+
 @keyframes paste-in {
   from { opacity: 0; transform: translateY(-6px); }
   to { opacity: 1; transform: none; }

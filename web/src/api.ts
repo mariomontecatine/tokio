@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+export interface TracePoint {
+  t: number;
+  pct: number;
+}
+
 export interface Status {
   now: number;
   plan: string;
   planLabel: string;
   planBasis: 'detected' | 'configured' | 'unknown';
-  trace: { t: number; c: number }[];
+  trace: TracePoint[];
+  traceSource: 'reported' | 'estimated';
   reservePct: number;
   block: WindowStatus;
   week: WindowStatus;
@@ -47,7 +53,7 @@ export interface ValueReport {
 
 export interface WindowStatus {
   window: { start: number; end: number; credits: number; opusCredits: number; events: number };
-  cap: { credits: number; basis: 'default' | 'calibrated'; anchors?: number };
+  cap: { credits: number; basis: 'default' | 'calibrated' | 'reported'; anchors?: number };
   usedPct: number;
   remainingCredits: number;
   source: 'reported' | 'estimated';
@@ -58,11 +64,15 @@ export interface WindowStatus {
 export interface Job {
   id: string;
   prompt: string;
+  /** Which stretches of the prompt were pasted, so they stay folded when it is reopened. */
+  promptBlocks: string[] | null;
   cwd: string;
   model: string | null;
   safety: 'plan' | 'edits' | 'full';
   resumeSessionId: string | null;
   runPolicy: string;
+  runAt: number | null;
+  urgent: boolean;
   status: string;
   estimateP50: number | null;
   estimateP90: number | null;
@@ -148,6 +158,10 @@ export const api = {
     request<{ impliedCap: number }>('/api/calibrate', { method: 'POST', body: JSON.stringify({ window, pct }) }),
 };
 
+/** How often to ask anyway: rarely while the stream is delivering, often when it isn't. */
+const POLL_LIVE_MS = 60_000;
+const POLL_DEAD_MS = 5_000;
+
 /**
  * Everything the dashboard shows, refreshed when the daemon says something
  * changed. The interval is a fallback for when the event stream drops.
@@ -160,9 +174,17 @@ export function useDashboard() {
   const [live, setLive] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
+  const missed = useRef(false);
 
-  const refresh = useCallback(async () => {
-    if (inFlight.current) return;
+  // A change that lands mid-request is not dropped, it is taken next. The old
+  // guard returned silently, which meant the very updates that arrive in a
+  // burst — a job finishing, usage landing — were the ones most likely to be
+  // thrown away, leaving the page a version behind until the next poll.
+  const refresh = useCallback(async function again(): Promise<void> {
+    if (inFlight.current) {
+      missed.current = true;
+      return;
+    }
     inFlight.current = true;
     try {
       const [s, j] = await Promise.all([api.status(), api.jobs()]);
@@ -173,6 +195,10 @@ export function useDashboard() {
       setError((err as Error).message);
     } finally {
       inFlight.current = false;
+      if (missed.current) {
+        missed.current = false;
+        void again();
+      }
     }
   }, []);
 
@@ -184,12 +210,16 @@ export function useDashboard() {
       void refresh();
     };
     source.onerror = () => setLive(false);
-    const poll = setInterval(refresh, 20_000);
-    return () => {
-      source.close();
-      clearInterval(poll);
-    };
+    return () => source.close();
   }, [refresh]);
+
+  // The stream is the update mechanism; this is the fallback for when it isn't
+  // one. While it is delivering, a minute is plenty — polling on top of a push
+  // is the same page fetched twice.
+  useEffect(() => {
+    const poll = setInterval(refresh, live === false ? POLL_DEAD_MS : POLL_LIVE_MS);
+    return () => clearInterval(poll);
+  }, [refresh, live]);
 
   return { status, jobs, live, error, refresh };
 }

@@ -1,18 +1,10 @@
 import type { ReactNode } from 'react';
+import { pressureOf, type Pressure } from './verdict';
 
 const SIZE = 132;
 const STROKE = 11;
 const R = (SIZE - STROKE) / 2 - 2;
 const C = 2 * Math.PI * R;
-
-export type Pressure = 'ease' | 'tight' | 'over';
-
-/** Green while there's room, amber when it's close, red once it won't fit. */
-export function pressureOf(usedPct: number): Pressure {
-  if (usedPct >= 90) return 'over';
-  if (usedPct >= 65) return 'tight';
-  return 'ease';
-}
 
 interface Props {
   /** What has actually been spent, 0–100. */

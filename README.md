@@ -31,7 +31,9 @@ answers it.
 `tokio` does both:
 
 - **A queue that fires on reset.** Leave prompts behind. They run on your machine, in your repo,
-  the moment quota comes back — resuming the exact session you were in, if you want.
+  the moment quota comes back — resuming the exact session you were in, if you want. A prompt
+  that hasn't run yet is still a draft: open it on the dashboard and rewrite it, and anything you
+  pasted in stays folded away rather than filling the box back up.
 - **A meter with the real numbers.** Not a reconstruction: `tokio` asks Claude Code's own
   `/usage` for the true percentage and the true reset time, then adds what only it can work out —
   your burn rate, and what a given request will cost before you commit to it.
@@ -126,6 +128,13 @@ blocks past the reset rule are the jobs waiting to run in the next window:
 ![The window strip](docs/screenshots/strip.png)
 
 -->
+
+The strip is drawn in percent, from the same readings as the gauges above it, so it covers the
+whole account: a window spent entirely in the Claude app or on another laptop still has a height
+here, sampled every few minutes rather than turn by turn. Only when there is no reading to draw
+from does it fall back to reconstructing the shape from this machine's transcripts, and the
+source is named under **Details**. The payback below is the opposite — it can only ever count
+transcripts, so it stays a floor.
 
 ```
  100 ┤                                              │
@@ -267,6 +276,12 @@ Current week (all models): 27% used · resets Sep 5, 8:59pm (Europe/Madrid)
 The daemon reads that every few minutes, and the dashboard's ↻ button reads it on demand and
 tells you how old the last one is. The header says `reported by Claude Code` whenever the figures
 on screen are Anthropic's own.
+
+A reading also expires the instant the reset it announced arrives, however recently it was taken.
+`/usage` prints no session line at all while nothing is running, so on a machine that has gone
+quiet — which is exactly what a machine out of quota does — the last reading from before a reset
+would otherwise stay the newest one there is, and the page would go on describing a window that
+had already ended.
 
 This matters more than it sounds. Reconstructing the window from transcripts gets it wrong:
 sessions don't start on the hour, so a locally guessed window can be hours off, and any cap you
@@ -415,7 +430,7 @@ Options for `add`:
 | `planPriceUsd` | `null` | Override the monthly price (regional pricing, a team seat) |
 | `reservePct` | `10` | How much of the window to keep for yourself |
 | `usagePollMs` | `180000` | How often to re-read the real percentages |
-| `usageMaxAgeMs` | `900000` | Past this, a reading is stale and estimates take over |
+| `usageMaxAgeMs` | `900000` | Past this a reading is stale and estimates take over — as they do the moment the reset it reported arrives |
 | `defaultSafety` | `edits` | Leash for new jobs |
 | `weeklyAnchor` | `null` | `{ "weekday": 3, "hour": 11 }` — set it and the weekly gauge shows a real reset instead of a rolling window |
 | `concurrency` | `1` | Jobs at once |

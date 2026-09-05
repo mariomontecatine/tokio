@@ -3,10 +3,16 @@ export const money = (n: number): string => (n >= 100 ? `$${n.toFixed(0)}` : `$$
 export const clock = (ts: number): string =>
   new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-/** "2h 41m" / "9m" — the countdown people actually read off a reset timer. */
+/**
+ * "2h 41m" / "9m" — the countdown people actually read off a reset timer.
+ *
+ * Zero is "0m", not "now": this always lands inside a sentence, and "resets in
+ * now" is both broken English and, in a dictionary that never sees this word,
+ * broken Spanish — "se reinicia en now".
+ */
 export function until(ts: number, now: number): string {
   const ms = ts - now;
-  if (ms <= 0) return 'now';
+  if (ms <= 0) return '0m';
   const minutes = Math.round(ms / 60_000);
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);

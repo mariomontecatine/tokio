@@ -1,7 +1,9 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api, type Project, type Session, type Status } from './api';
 import type { Translate } from './i18n';
 import { Expand } from './Expand';
+import { PromptField } from './PromptField';
+import { emptyDraft, toPrompt, type Draft } from './pasted';
 import { money, pct } from './format';
 
 interface Props {
@@ -25,26 +27,6 @@ function toLocalInput(at: number): string {
   const d = new Date(at);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-/**
- * Past this, a paste is a document rather than a sentence.
- *
- * Dropping a stack trace into the box buries the instruction you came to write
- * under two hundred lines of someone else's text. Either threshold alone misses
- * a case — a minified line is one line and enormous, a short diff is twelve
- * tiny ones — so both count.
- */
-const PASTE_CHARS = 500;
-const PASTE_LINES = 8;
-
-/** The box grows with what you type, and stops before it eats the page. */
-const MAX_TEXTAREA_PX = 240;
-
-interface Pasted {
-  id: string;
-  text: string;
-  lines: number;
 }
 
 function remembered(key: string): string | null {
@@ -76,9 +58,7 @@ function remember(key: string, value: string): void {
  * with numbers nobody asked for.
  */
 export function Compose({ status, onQueued, t }: Props) {
-  const [prompt, setPrompt] = useState('');
-  const [pasted, setPasted] = useState<Pasted[]>([]);
-  const [openPaste, setOpenPaste] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [cwd, setCwd] = useState('');
@@ -93,16 +73,6 @@ export function Compose({ status, onQueued, t }: Props) {
   const [forecast, setForecast] = useState<Forecast | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const textarea = useRef<HTMLTextAreaElement>(null);
-
-  // No drag handle: the box sizes itself to its content, the way a chat input
-  // does. A resize grip on a two-line field is a control nobody wants to use.
-  useLayoutEffect(() => {
-    const element = textarea.current;
-    if (!element) return;
-    element.style.height = 'auto';
-    element.style.height = `${Math.min(element.scrollHeight, MAX_TEXTAREA_PX)}px`;
-  }, [prompt]);
 
   useEffect(() => {
     void api.projects().then((list) => {
@@ -149,33 +119,10 @@ export function Compose({ status, onQueued, t }: Props) {
     remember(`session:${cwd}`, next);
   }
 
-  /**
-   * What actually gets queued: the pasted blocks first, then what you typed.
-   *
-   * That order matches how the box is used — you drop in the log, then say what
-   * to do about it — and it is what the estimate is priced on, so the forecast
-   * can never quietly ignore the largest part of the prompt.
-   */
-  const fullPrompt = useMemo(
-    () => [...pasted.map((p) => p.text), prompt.trim()].filter(Boolean).join('\n\n'),
-    [pasted, prompt],
-  );
+  // The whole prompt, folded blocks and all — which is what the estimate is
+  // priced on, so the forecast can never quietly ignore the largest part of it.
+  const fullPrompt = useMemo(() => toPrompt(draft), [draft]);
   const ready = fullPrompt.length > 0;
-
-  function onPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
-    const text = event.clipboardData.getData('text');
-    if (!text) return;
-    const lines = text.split('\n').length;
-    if (text.length < PASTE_CHARS && lines <= PASTE_LINES) return;
-
-    event.preventDefault();
-    setPasted((current) => [...current, { id: `${Date.now()}-${current.length}`, text, lines }]);
-  }
-
-  function removePasted(id: string) {
-    setPasted((current) => current.filter((p) => p.id !== id));
-    setOpenPaste((current) => (current === id ? null : current));
-  }
 
   useEffect(() => {
     if (!cwd || !ready) {
@@ -208,6 +155,7 @@ export function Compose({ status, onQueued, t }: Props) {
     try {
       await api.queue({
         prompt: fullPrompt,
+        promptBlocks: draft.pasted.map((p) => p.text),
         cwd,
         model: model || null,
         safety,
@@ -215,9 +163,7 @@ export function Compose({ status, onQueued, t }: Props) {
         runPolicy: when,
         runAt: scheduledFor,
       });
-      setPrompt('');
-      setPasted([]);
-      setOpenPaste(null);
+      setDraft(emptyDraft());
       setForecast(null);
       onQueued();
     } catch (err) {
@@ -241,51 +187,13 @@ export function Compose({ status, onQueued, t }: Props) {
 
   return (
     <div className="compose">
-      <div className="compose-field">
-        {pasted.length > 0 && (
-          <ul className="pastes">
-            {pasted.map((item) => (
-              <li key={item.id} className="paste">
-                <div className="paste-row">
-                  <button
-                    className="paste-open"
-                    onClick={() => setOpenPaste(openPaste === item.id ? null : item.id)}
-                    aria-expanded={openPaste === item.id}
-                    title={openPaste === item.id ? t('compose.pasted.collapse') : t('compose.pasted.expand')}
-                  >
-                    <span className="paste-glyph" aria-hidden="true" />
-                    <span className="paste-name">{t('compose.pasted')}</span>
-                    <span className="paste-meta">{t('compose.pasted.lines', { n: item.lines })}</span>
-                  </button>
-                  <button
-                    className="paste-remove"
-                    onClick={() => removePasted(item.id)}
-                    aria-label={t('compose.pasted.remove')}
-                  >
-                    ×
-                  </button>
-                </div>
-                <Expand open={openPaste === item.id}>
-                  <pre className="paste-preview">{item.text}</pre>
-                </Expand>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <textarea
-          ref={textarea}
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          onPaste={onPaste}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit();
-          }}
-          placeholder={t('compose.placeholder')}
-          rows={2}
-          aria-label={t('compose.placeholder')}
-        />
-      </div>
+      <PromptField
+        draft={draft}
+        onChange={setDraft}
+        placeholder={t('compose.placeholder')}
+        onSubmit={() => void submit()}
+        t={t}
+      />
 
       <div className="compose-bar">
         <select value={cwd} onChange={(e) => chooseCwd(e.target.value)} aria-label="Folder">
