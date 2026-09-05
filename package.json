@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "npm run build:server && npm run build:web",
-    "build:server": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "build:server": "tsc -p tsconfig.json && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
     "build:web": "vite build",
     "dev": "node --no-warnings --experimental-strip-types src/cli.ts start --dev",
     "dev:web": "vite",
