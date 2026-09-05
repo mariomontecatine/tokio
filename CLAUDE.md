@@ -83,3 +83,10 @@ The whole value is that the numbers are trustworthy, so:
   `src/plans/profiles.json` must carry `basis: 'default'` through to the UI.
 - Estimates are ranges (p50/p90) with a stated basis. Don't collapse them to one number.
 - If a number can't be known, say so in the interface instead of inventing a plausible one.
+
+## Work in progress lives in docs/
+
+`docs/desktop-app.md` is the running state of turning tokio into a desktop app — what is
+decided, what is done, what is deliberately still open. Read it before touching packaging,
+Windows paths, or anything about users who don't have the CLI. It is edited in place, not
+appended to: if you finish something there, move its status and write down what you learned.
