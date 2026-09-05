@@ -241,11 +241,28 @@ attempt had only the second and left the visible one untouched.
 `vibrancy` were set on all three on the theory that a platform ignores what it
 cannot do. Do not assume that; give each one only what it implements.
 
-`[blocked]` **Windows 11 Mica and macOS vibrancy.** Declared in
-`desktop/main.js` and unverifiable from Linux. Check them on the real platforms;
-if Mica does not take, the solid ground colour is already behind it.
+`[done]` **Rounded corners on Windows — verified.** Windows draws them for a
+frameless window with no help.
 
-**A pale 4px band under WSLg is not ours** — settled, so nobody re-opens it. It
+`[done]` **Mica was declared and then buried.** Verified not working on Windows
+11, and the cause was ours twice over: an opaque window `backgroundColor` and an
+opaque page ground, both painted on top of the material Windows was faithfully
+compositing underneath. A material request is not a promise that anything will
+show — whatever the page paints wins. The window colour is transparent on
+Windows now, and the ground carries `--ground-alpha`, set high on purpose: a
+hint of depth at the edges, not a wallpaper behind a dashboard that spends three
+colours saying whether you make it to the reset. Take that number to 1 and the
+window is solid again.
+
+`[next]` **Confirm Mica actually lands**, now that there is something for it to
+land on. If the machine is Windows 10 it never can — the material does not exist
+before Windows 11 — in which case gate the alpha on the build, or drop it.
+
+`[blocked]` **macOS vibrancy.** Declared, and nothing has run on a Mac yet. The
+same trap applies: `vibrancy` will be buried under the page's ground exactly as
+Mica was, so whatever is done for `win32` will need doing for `darwin`.
+
+**A pale 4px band under WSLg is not ours** — settled, and confirmed absent on Windows, so nobody re-opens it. It
 runs along the left, right and bottom of the window and not the top. It is the
 window manager's resize border around a frameless window: `capturePage` comes
 back dark to all four edges, so the band is outside the web contents entirely.

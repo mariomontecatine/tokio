@@ -1057,3 +1057,27 @@ body:has([data-app])::-webkit-scrollbar-thumb:hover,
 body:has([data-app]) ::-webkit-scrollbar-thumb:hover {
   background-color: var(--ink-faint);
 }
+
+/*
+ * Mica, let through — on Windows, and only just.
+ *
+ * Windows 11 composites a heavily blurred, desaturated wash of the desktop
+ * behind a window that asks for it. Asking is not enough: whatever the page
+ * paints sits on top, so an opaque ground buries the material completely, which
+ * is exactly what was happening.
+ *
+ * The alpha is deliberately high. The point is a hint of depth at the edges,
+ * not a wallpaper showing through a dashboard — and this interface spends three
+ * colours saying whether you make it to the reset, which have to stay legible
+ * over whatever someone has set as their background. One number controls it:
+ * take `--ground-alpha` to 1 and the window is solid again.
+ *
+ * Windows only. Mica does not exist before Windows 11, and on a build without
+ * it the material request is ignored and this alpha would show the compositor's
+ * own backdrop instead of a wallpaper.
+ */
+html:has([data-app="win32"]),
+body:has([data-app="win32"]) {
+  --ground-alpha: 0.9;
+  background: color-mix(in srgb, var(--ground) calc(var(--ground-alpha) * 100%), transparent);
+}

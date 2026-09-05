@@ -153,7 +153,16 @@ function createWindow(url) {
     minHeight: 620,
     show: false,
     frame: false,
-    backgroundColor: GROUND,
+    // Mica needs something to show through.
+    //
+    // The material was declared and then painted over twice — once here with an
+    // opaque window colour, once by the page's own ground — so Windows was
+    // compositing a wallpaper tint underneath two layers of near-black and the
+    // feature looked broken when it was simply buried. A transparent window
+    // colour lets it reach the page, which then decides how much of it to let
+    // through. Everywhere else the solid ground stays: it is what stops the
+    // window flashing white before the first paint.
+    backgroundColor: process.platform === 'win32' ? '#00000000' : GROUND,
     // A pale 4px band along the left, right and bottom shows up under WSLg.
     // It is the window manager's resize border around a frameless window, not
     // anything this code draws: `capturePage` comes back dark to all four
