@@ -570,7 +570,19 @@ button, input, textarea, select { font: inherit; color: inherit; }
 
 /* Anchors and programmatic jumps. Wheel scrolling is smoothed in JS, which
    turns this off while it is running so the two cannot animate at once. */
-html { scroll-behavior: smooth; }
+/*
+ * The ground is painted on the root, not only on the body.
+ *
+ * A page relies on background propagation from `body` and never notices, since
+ * a browser paints its own canvas behind it. A frameless window has no such
+ * canvas: anything the body has not covered — the moment before it renders, the
+ * strip a resize outruns — is whatever the compositor had there, which is how a
+ * dark application ends up with a pale edge.
+ */
+html {
+  scroll-behavior: smooth;
+  background: var(--ground);
+}
 
 .reveal {
   opacity: 0;

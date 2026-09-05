@@ -122,8 +122,10 @@ Worth doing on its own, before any window exists. Concrete, located work:
   over `shell: true` — a prompt reaches the shell otherwise.
 - **`[open]` WSL.** The first user of this runs Claude Code *inside WSL*, so a
   Windows-native tokio cannot see those transcripts or that `claude`. Either
-  tokio runs inside WSL, or the Windows app bridges to it. Decide before phase 2;
-  it changes what "install on Windows" means.
+  tokio runs inside WSL with the window on the Windows side, or the Windows app
+  bridges to it, or Claude Code gets installed natively too. `TOKIO_URL` makes
+  the question testable today without answering it — it is a way to try the
+  application, not the answer.
 - **`[next]` Watching.** `chokidar` on Windows is fine for local paths; a
   `\\wsl$` path may need polling.
 - **`[next]` Tests on Windows.** The suite must pass there, under the same rule
@@ -153,10 +155,24 @@ query string.
 
 `[done]` Single-instance lock.
 
-`[next]` Tray icon and background running.
+`[done]` **Tray icon, and closing the window does not quit.** The daemon is the
+point: it polls, it ingests, and it fires the queue when a window resets. An
+application that stopped doing that because someone closed a window they had
+finished reading would miss the resets it exists to catch. The icon is a ring,
+generated rather than fetched — macOS gets a template image so the menu bar can
+recolour it, and saying so is the difference between an icon and a white smudge.
 
-`[next]` Autostart: Startup folder or the Run key on Windows; LaunchAgent on
-macOS; autostart/systemd user unit on Linux.
+`[done]` **Autostart, where Electron has it.** `setLoginItemSettings` covers
+Windows and macOS and is offered in the tray menu. Linux wants a `.desktop`
+file in `~/.config/autostart`, which Electron does not write, so the item is not
+offered there rather than offered and silently ignored — `[next]` to add.
+
+`[done]` **`TOKIO_URL` points the window at a daemon anywhere.** It wins over
+everything else. This is what makes the application testable on Windows before
+the daemon is ported to it: someone whose Claude Code lives in WSL has the
+transcripts, the CLI and the database over there, and the Windows window can
+show that daemon over the network instead of being an empty shell that cannot
+find anything.
 
 `[next]` **Get the token out of the URL entirely.** Appending it to the query
 string is what the dashboard already understands, so it is what the window does
@@ -186,9 +202,21 @@ attempt had only the second and left the visible one untouched.
 
 `[done]` No text selection on chrome, links to elsewhere handed to the OS.
 
-`[blocked]` **Windows 11 Mica and macOS vibrancy.** Both are declared in
-`desktop/main.js` and neither can be verified from Linux. Check them on the real
-platforms; if Mica does not take, the solid ground colour is already behind it.
+`[done]` **Platform options are only handed to their platform.** `mica` and
+`vibrancy` were set on all three on the theory that a platform ignores what it
+cannot do. Do not assume that; give each one only what it implements.
+
+`[blocked]` **Windows 11 Mica and macOS vibrancy.** Declared in
+`desktop/main.js` and unverifiable from Linux. Check them on the real platforms;
+if Mica does not take, the solid ground colour is already behind it.
+
+**A pale 4px band under WSLg is not ours** — settled, so nobody re-opens it. It
+runs along the left, right and bottom of the window and not the top. It is the
+window manager's resize border around a frameless window: `capturePage` comes
+back dark to all four edges, so the band is outside the web contents entirely.
+`hasShadow: false` and `transparent: true` were both tried, neither touched it,
+and neither was left in the code — a workaround that does not work is worse than
+the artefact. Windows draws this frame through DWM and does not have it.
 
 `[next]` Light theme from the system, `prefers-reduced-motion`.
 
