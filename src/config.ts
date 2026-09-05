@@ -28,6 +28,12 @@ export interface Config {
   /** Defaults to ~/.claude (or $CLAUDE_CONFIG_DIR). */
   claudeConfigDir: string | null;
   claudeBin: string;
+  /**
+   * A command prefix placed in front of `claudeBin`, for a Claude Code that is
+   * not simply on this system's PATH — `['wsl.exe', '--']` reaches the one
+   * inside WSL from Windows. See `src/claudeCli.ts`.
+   */
+  claudeLauncher: string[] | null;
   defaultSafety: Safety;
   defaultModel: string | null;
   /** Don't start a job unless this much of the block would survive it. */
@@ -56,6 +62,7 @@ const DEFAULTS: Config = {
   token: null,
   claudeConfigDir: null,
   claudeBin: 'claude',
+  claudeLauncher: null,
   defaultSafety: 'edits',
   defaultModel: null,
   reservePct: 10,
