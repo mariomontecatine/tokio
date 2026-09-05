@@ -83,11 +83,11 @@ fastify        -> listening on 35593 | response {"ok":true}
 process and served the built dashboard to a `BrowserWindow`. The window opened
 and the server answered.
 
-`webContents.capturePage()` returned a blank frame, and on a second attempt
-`UnknownVizError`. **This is an artefact of the sandbox, not a finding**: it was
-run under WSLg with no GPU compositor and hardware acceleration disabled. Do not
-spend time on it. Re-verify rendering on a machine with a real display, which is
-the next thing anyone touching this should do anyway.
+`webContents.capturePage()` first returned a blank frame. **That was an
+artefact, not a finding**: passing `--disable-gpu` *and*
+`--disable-software-rasterizer` together leaves Chromium with nothing to
+rasterize with. `--disable-gpu` alone renders correctly under WSLg, and the
+window has since been captured showing live data.
 
 ### `claude -p "/usage"` on native Windows `[blocked]` — the one open item
 
@@ -131,33 +131,66 @@ Worth doing on its own, before any window exists. Concrete, located work:
 
 ---
 
-## Phase 2 — the shell `[next]`
+## Phase 2 — the shell `[doing]`
 
-- Tray icon, background running, single-instance lock.
-- Autostart: Startup folder or the Run key on Windows; LaunchAgent on macOS;
-  autostart/systemd user unit on Linux.
-- **Pass the token in process, not in the URL.** The daemon prints a
-  `?token=…` URL today; an app has no reason to put a secret in a query string.
-- Port 4646 may be taken. Bind to 0 and tell the window the port.
+Run it with `npm run app` from the repo root: it builds the dashboard and opens
+the window. On Linux, Electron needs GUI libraries the base image may not carry
+— `sudo apt install -y libnss3 libnspr4 libasound2t64`. Nothing to install on
+Windows or macOS.
+
+`[done]` **The window, and the daemon inside it.** `desktop/main.js` imports
+`startDaemon` and runs it in the Electron main process — the point of choosing
+Electron. Verified against real data.
+
+`[done]` **Deferring to a daemon that is already running.** Anyone using
+`tokio start` has one up with the real database open; a second would be two
+writers and two pollers against one file. The first attempt tested `res.ok`,
+which read the 401 from a daemon bound past loopback as an empty port and
+started a second straight into `EADDRINUSE`. Any reply at all means occupied.
+
+`[done]` **The token stays out of the log.** The URL is printed without its
+query string.
+
+`[done]` Single-instance lock.
+
+`[next]` Tray icon and background running.
+
+`[next]` Autostart: Startup folder or the Run key on Windows; LaunchAgent on
+macOS; autostart/systemd user unit on Linux.
+
+`[next]` **Get the token out of the URL entirely.** Appending it to the query
+string is what the dashboard already understands, so it is what the window does
+today — but an application has no reason to put a secret there at all. Hand it
+over the preload bridge instead, and have the dashboard prefer that when it is
+running as an app.
 
 ---
 
-## Phase 3 — how it looks `[next]` — a requirement, not a polish pass
+## Phase 3 — how it looks `[doing]` — a requirement, not a polish pass
 
 The dashboard itself is designed and stays as it is. What made the phase 0 test
 window look like a 1995 Tk application was **nothing but the default OS chrome
 around it**. That is the work:
 
-- **Frameless with custom chrome.** `titleBarStyle: 'hidden'` plus
-  `titleBarOverlay` on Windows; `hiddenInset` on macOS. A custom drag region,
-  window controls that match the platform.
-- **Windows 11 backdrop.** Electron's `backgroundMaterial: 'mica'`, rounded
-  corners, and the acrylic treatment the platform expects.
-- **macOS vibrancy** on the same surface, so one design reads native on both.
-- **Kill the browser tells.** No default context menu, no text selection on
-  chrome, no focus rings where a native app would not draw them.
-- **Respect the OS.** Light/dark from the system, `prefers-reduced-motion`,
-  system font stack.
+`[done]` **Frameless, and the masthead is the title bar.** Not a second bar
+stacked above the first: a frameless window needs somewhere to be dragged by and
+somewhere to put its buttons, and that row was already both. `web/src/desktop.ts`
+carries the bridge, `WindowControls.tsx` draws minimise/maximise/close at the
+platform's own one-pixel stroke weight, and macOS keeps its own traffic lights
+and gets only the room for them.
+
+`[done]` **The scrollbar.** Chromium's default rail was the loudest remaining
+tell. Note the two selectors in `styles.css`: without a space it is the
+document's own scrollbar, with one it is every scrollbar inside — the first
+attempt had only the second and left the visible one untouched.
+
+`[done]` No text selection on chrome, links to elsewhere handed to the OS.
+
+`[blocked]` **Windows 11 Mica and macOS vibrancy.** Both are declared in
+`desktop/main.js` and neither can be verified from Linux. Check them on the real
+platforms; if Mica does not take, the solid ground colour is already behind it.
+
+`[next]` Light theme from the system, `prefers-reduced-motion`.
 
 The bar the user named is Claude Desktop for Windows. Treat it as the reference.
 

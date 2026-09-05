@@ -23,7 +23,8 @@
     "dev:web": "vite",
     "test": "node --no-warnings --experimental-strip-types --test test/*.test.ts",
     "start": "node dist/cli.js start",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "app": "npm run build && cd desktop && npm start"
   },
   "dependencies": {
     "@fastify/static": "^8.0.0",

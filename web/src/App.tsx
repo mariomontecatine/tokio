@@ -10,6 +10,8 @@ import { Countdown } from './Countdown';
 import { Heatmap } from './Heatmap';
 import { Expand } from './Expand';
 import { clock, money, pct } from './format';
+import { desktop, drawsOwnControls } from './desktop';
+import { WindowControls } from './WindowControls';
 import { useLang, localeOf, type Lang, type Translate } from './i18n';
 import { startSmoothScroll } from './smoothScroll';
 
@@ -262,10 +264,17 @@ export default function App() {
 
   const verdict = readVerdict(status, t);
   const week = status.week;
+  const bridge = desktop();
 
   return (
     <div className="shell">
-      <header className="masthead">
+      {/* The masthead is the title bar when this is an application.
+          Not a second bar stacked above it: a frameless window needs somewhere
+          to be dragged by and somewhere to put its buttons, and this row is
+          already both, so the app gets its chrome without growing a strip of
+          empty pixels that exists only to be grabbed. In a browser tab the
+          attributes below do nothing and the row is what it always was. */}
+      <header className="masthead" data-app={bridge?.platform}>
         <span className="wordmark">tokio</span>
         <span className="plan">{status.planLabel}</span>
         {live === false && <span className="stale">{t('error.stale')}</span>}
@@ -286,6 +295,7 @@ export default function App() {
         <button className="link details-toggle" onClick={() => setShowDetails((v) => !v)} aria-expanded={showDetails}>
           {showDetails ? t('details.hide') : t('details.show')}
         </button>
+        {bridge && drawsOwnControls(bridge) && <WindowControls bridge={bridge} />}
       </header>
 
       <section className={`state tone-${verdict.pressure}`}>

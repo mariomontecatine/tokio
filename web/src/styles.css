@@ -925,3 +925,123 @@ html { scroll-behavior: smooth; }
   z-index: 2;
   animation: fade-in 120ms ease both;
 }
+
+/* ---------- running as an application ---------- */
+
+/*
+ * The window is frameless, so everything the operating system would have drawn
+ * is drawn here — and the test of whether it worked is that nobody notices it
+ * was.
+ *
+ * Three things separate an application from a page in a box, and all three are
+ * below: a region you can drag the window by, buttons that match the platform's
+ * own weight rather than a web designer's idea of them, and the absence of the
+ * things only browsers do — a caret in text you cannot edit, a selection
+ * highlight across a heading, a focus ring on a control the mouse just hit.
+ */
+[data-app] {
+  /* The drag region. Buttons inside it opt back out below, or the window moves
+     instead of the click landing. */
+  -webkit-app-region: drag;
+  padding-top: 34px;
+  padding-bottom: 22px;
+}
+[data-app] button,
+[data-app] .segmented,
+[data-app] .winctl {
+  -webkit-app-region: no-drag;
+}
+
+/* macOS draws its own traffic lights into the frameless window; this is the
+   room they need, and the reason the app does not draw a second set. The
+   attribute carries the platform because the bridge knows it — sniffing the
+   engine with an @supports probe answers a different question and gets it
+   wrong under Electron, where Chromium is Chromium on every system. */
+[data-app="darwin"] { padding-left: 72px; }
+
+.winctl {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: -10px;
+  margin-left: 4px;
+}
+.winctl-btn {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-dim);
+  cursor: default;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.winctl-btn svg {
+  fill: none;
+  stroke: currentColor;
+  /* One pixel, not the 1.5 a web icon set would give it. At this size the
+     difference is the whole difference between native and drawn-by-a-website. */
+  stroke-width: 1;
+  shape-rendering: geometricPrecision;
+}
+.winctl-btn:hover { background: var(--surface-2); color: var(--ink); }
+.winctl-btn:active { background: var(--hairline); }
+/* Close takes the platform's red, not the palette's `over`: a window control is
+   not a reading, and those three colours mean something here. */
+.winctl-btn.danger:hover { background: #c42b1c; color: #fff; }
+.winctl-btn:focus-visible { outline: 1px solid var(--hairline); outline-offset: -1px; }
+
+/* Browser tells, removed. Text that exists to be read is not text that exists
+   to be selected, and an application that lets you drag-highlight its own
+   headings is announcing what it is built out of. */
+[data-app] .wordmark,
+[data-app] .plan,
+body:has([data-app]) h1,
+body:has([data-app]) h2,
+body:has([data-app]) dt {
+  user-select: none;
+  cursor: default;
+}
+
+/*
+ * The scrollbar was the last thing in the window still announcing a browser.
+ *
+ * Chromium's default is a wide light rail with an arrow button at each end, and
+ * no desktop application on any platform has looked like that in fifteen years.
+ *
+ * Both selectors are needed and they are not the same rule. Without the space
+ * it is the document's own scrollbar — the one down the side of the window;
+ * with the space it is every scrollbar inside it. The first attempt had only
+ * the second, which styled scrollers nobody had yet scrolled and left the one
+ * actually on screen exactly as Chromium drew it.
+ *
+ * Scoped to the application, because in a browser tab the scrollbar belongs to
+ * the browser and restyling someone else's chrome is not ours to do.
+ */
+body:has([data-app])::-webkit-scrollbar,
+body:has([data-app]) ::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+body:has([data-app])::-webkit-scrollbar-track,
+body:has([data-app]) ::-webkit-scrollbar-track,
+body:has([data-app])::-webkit-scrollbar-corner,
+body:has([data-app]) ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+body:has([data-app])::-webkit-scrollbar-thumb,
+body:has([data-app]) ::-webkit-scrollbar-thumb {
+  /* Painted through a transparent border so the thumb sits inset from the
+     window edge, which is what makes it read as an overlay rather than a rail. */
+  background-color: var(--hairline);
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-clip: padding-box;
+  transition: background-color 140ms ease;
+}
+body:has([data-app])::-webkit-scrollbar-thumb:hover,
+body:has([data-app]) ::-webkit-scrollbar-thumb:hover {
+  background-color: var(--ink-faint);
+}
