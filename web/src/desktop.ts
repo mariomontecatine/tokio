@@ -12,6 +12,14 @@
 export interface DesktopBridge {
   isDesktop: true;
   platform: string;
+  /**
+   * The daemon's access token, handed over out of band.
+   *
+   * `null` when the daemon is on loopback and needs none. In a browser there is
+   * no bridge at all and the token arrives in the query string instead, which
+   * is why this is the preferred source rather than the only one.
+   */
+  token: string | null;
   minimize(): void;
   toggleMaximize(): void;
   close(): void;

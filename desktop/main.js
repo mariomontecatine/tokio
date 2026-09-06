@@ -14,6 +14,8 @@
  */
 const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen, shell, nativeTheme } = require('electron');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 const { pathToFileURL } = require('node:url');
 
 const DIST = pathToFileURL(path.join(__dirname, '..', 'dist')).href;
@@ -43,12 +45,34 @@ async function findRunningDaemon(port) {
 }
 
 /**
- * The URL to show, with the key to it.
+ * Separate an address from the token somebody put in its query string.
  *
- * A daemon listening beyond loopback wants its token on every call, and the
- * dashboard picks that up from the query string exactly as it does from the URL
- * `tokio start` prints. On a loopback-only daemon there is no token and none is
- * appended.
+ * `TOKIO_URL` is the URL a human was given, so it carries its token the way the
+ * daemon prints it. The window does not have to pass it on that way.
+ */
+function splitToken(raw) {
+  try {
+    const parsed = new URL(raw);
+    const token = parsed.searchParams.get('token');
+    parsed.searchParams.delete('token');
+    return { url: parsed.toString(), token };
+  } catch {
+    return { url: raw, token: null };
+  }
+}
+
+/**
+ * The address to show, and the key to it, kept apart.
+ *
+ * A daemon listening beyond loopback wants its token on every call. A browser
+ * has nowhere to be handed one, so the dashboard reads it off the query string —
+ * which is why `tokio start` prints it there, and why it lands in history, in
+ * screenshots and in any Referer the page ever sends.
+ *
+ * An application has somewhere: the preload bridge. So the token is carried
+ * beside the URL from here and handed over out of band, and the page is loaded
+ * at an address with no secret in it. The query-string path stays exactly as it
+ * was for the browser, which still has no alternative.
  */
 async function resolveUrl() {
   // An explicit address wins over everything.
@@ -58,19 +82,21 @@ async function resolveUrl() {
   // transcripts, the CLI and the database over there; the Windows window can
   // point at that daemon over the network and be the real thing, rather than an
   // empty shell reporting that it cannot find anything.
-  if (process.env.TOKIO_URL) return { url: process.env.TOKIO_URL, own: false, remote: true };
+  if (process.env.TOKIO_URL) {
+    return { ...splitToken(process.env.TOKIO_URL), own: false, remote: true };
+  }
 
   const { loadConfig } = await import(`${DIST}/config.js`);
   const cfg = loadConfig();
-  const withToken = (port, token) => `http://127.0.0.1:${port}/${token ? `?token=${token}` : ''}`;
+  const at = (port) => `http://127.0.0.1:${port}/`;
 
   if (await findRunningDaemon(cfg.port)) {
-    return { url: withToken(cfg.port, cfg.token), own: false };
+    return { url: at(cfg.port), token: cfg.token ?? null, own: false };
   }
 
   const { startDaemon } = await import(`${DIST}/daemon.js`);
   const daemon = await startDaemon({ host: '127.0.0.1' });
-  return { url: withToken(daemon.cfg.port, daemon.cfg.token), own: true };
+  return { url: at(daemon.cfg.port), token: daemon.cfg.token ?? null, own: true };
 }
 
 /**
@@ -87,6 +113,8 @@ let tray = null;
 let windowRef = null;
 /** Set once the daemon is resolved, so a second launch can reopen the window. */
 let currentUrl = null;
+/** Handed to the page over the bridge instead of through its address. */
+let currentToken = null;
 
 function showWindow(url) {
   if (windowRef && !windowRef.isDestroyed()) {
@@ -103,11 +131,72 @@ function showWindow(url) {
  * Start with the machine, or don't.
  *
  * `setLoginItemSettings` covers Windows and macOS. Linux has no equivalent in
- * Electron — it wants a `.desktop` file in `~/.config/autostart` — so the menu
- * item is simply not offered there rather than offered and silently ignored.
+ * Electron because there is no system call to make: the desktop environments
+ * agree on a file, `~/.config/autostart/tokio.desktop`, and honouring it is the
+ * whole of the specification. So that file is written and removed directly.
  */
-const autostartSupported = process.platform === 'win32' || process.platform === 'darwin';
-const opensAtLogin = () => autostartSupported && app.getLoginItemSettings().openAtLogin;
+const AUTOSTART = path.join(os.homedir(), '.config', 'autostart', 'tokio.desktop');
+const isLinux = process.platform === 'linux';
+
+/**
+ * `Exec` is a command line, so anything with a space in it has to be quoted —
+ * and a path is exactly the kind of thing that has one. The desktop entry
+ * specification wants backslashes and double quotes escaped inside the quotes.
+ */
+const quote = (s) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+
+function desktopEntry() {
+  // Packaged, the executable is the application. Unpackaged, it is Electron and
+  // the application is an argument to it, which is what makes this work in
+  // development instead of autostarting a bare Electron with no app in it.
+  const exec = app.isPackaged
+    ? quote(process.execPath)
+    : `${quote(process.execPath)} ${quote(app.getAppPath())}`;
+  return [
+    '[Desktop Entry]',
+    'Type=Application',
+    'Name=tokio',
+    'Comment=Watch your subscription quota and run queued prompts when it resets',
+    `Exec=${exec}`,
+    `Icon=${path.join(__dirname, 'assets', 'icon.png')}`,
+    'Terminal=false',
+    'X-GNOME-Autostart-enabled=true',
+    '',
+  ].join('\n');
+}
+
+// Read back rather than remembered. On Linux the answer is a file that the user
+// can delete from outside the application, and a checkbox that reported what we
+// last did rather than what is true would be wrong the first time they did.
+const opensAtLogin = () => {
+  if (!isLinux) return app.getLoginItemSettings().openAtLogin;
+  try {
+    return fs.existsSync(AUTOSTART);
+  } catch {
+    return false;
+  }
+};
+
+function setAutostart(on) {
+  if (!isLinux) {
+    app.setLoginItemSettings({ openAtLogin: on, openAsHidden: true });
+    return;
+  }
+  try {
+    if (!on) {
+      fs.rmSync(AUTOSTART, { force: true });
+      return;
+    }
+    fs.mkdirSync(path.dirname(AUTOSTART), { recursive: true });
+    fs.writeFileSync(AUTOSTART, desktopEntry());
+  } catch (err) {
+    // A home directory that cannot be written to is a real answer. The menu is
+    // rebuilt from `opensAtLogin`, which reads the file, so the checkbox falls
+    // back to the truth on its own rather than claiming a setting that is not
+    // there.
+    console.error(`tokio: could not change autostart — ${err.message}`);
+  }
+}
 
 function buildTray(url) {
   const icon = nativeImage.createFromPath(
@@ -124,18 +213,16 @@ function buildTray(url) {
     const menu = Menu.buildFromTemplate([
       { label: 'Open tokio', click: () => showWindow(url) },
       { type: 'separator' },
-      ...(autostartSupported
-        ? [{
-            label: 'Start with the computer',
-            type: 'checkbox',
-            checked: opensAtLogin(),
-            click: (item) => {
-              app.setLoginItemSettings({ openAtLogin: item.checked, openAsHidden: true });
-              rebuild();
-            },
-          },
-          { type: 'separator' }]
-        : []),
+      {
+        label: 'Start with the computer',
+        type: 'checkbox',
+        checked: opensAtLogin(),
+        click: (item) => {
+          setAutostart(item.checked);
+          rebuild();
+        },
+      },
+      { type: 'separator' },
       { label: 'Quit', click: () => { quitting = true; app.quit(); } },
     ]);
     tray.setContextMenu(menu);
@@ -250,6 +337,12 @@ ipcMain.on('window:toggle-maximize', (e) => {
 });
 ipcMain.on('window:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close());
 
+// Synchronous because the preload asks once, before the page runs, and the
+// dashboard reads the token from a plain function call on every request. Making
+// it a promise would push `await` through every caller of `accessToken` to save
+// a round trip that happens once and blocks nothing anyone can see.
+ipcMain.on('tokio:token', (e) => { e.returnValue = currentToken; });
+
 // One tokio, however many times its icon is clicked. Two would be two pollers
 // and two writers against one database.
 if (!app.requestSingleInstanceLock()) {
@@ -270,10 +363,11 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => { quitting = true; });
 
   app.whenReady().then(async () => {
-    const { url, own, remote } = await resolveUrl();
-    // Logged without its query string: the token travels in there, and an
-    // application's stdout is the one place nobody thinks to check before
-    // pasting it into a bug report.
+    const { url, token, own, remote } = await resolveUrl();
+    // The URL no longer carries the token, but it is still printed without a
+    // query string: an application's stdout is the one place nobody thinks to
+    // check before pasting it into a bug report, and that should stay true of
+    // whatever anyone puts in `TOKIO_URL` next.
     const shown = url.split('?')[0];
     console.log(
       remote ? `tokio: showing the daemon at ${shown} (TOKIO_URL)`
@@ -281,6 +375,7 @@ if (!app.requestSingleInstanceLock()) {
         : `tokio: attached to the daemon already running at ${shown}`,
     );
 
+    currentToken = token;
     currentUrl = url;
     buildTray(url);
     showWindow(url);

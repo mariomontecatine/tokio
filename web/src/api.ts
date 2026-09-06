@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { desktop } from './desktop';
 
 export interface TracePoint {
   t: number;
@@ -89,11 +90,18 @@ export interface Session { sessionId: string; title: string; updatedAt: number }
 /**
  * Access token for a dashboard served beyond loopback.
  *
- * The daemon hands it over once, in the URL it prints. Keeping it in
- * sessionStorage means a reload or an in-page link doesn't lock you out, and
+ * In a browser the daemon hands it over once, in the URL it prints. Keeping it
+ * in sessionStorage means a reload or an in-page link doesn't lock you out, and
  * stripping it from the address bar keeps it out of screenshots and history.
+ *
+ * In the application there is a bridge, so it never goes through the address at
+ * all — and that source is checked first, because a window told the token
+ * directly should not depend on a query string having survived a reload.
  */
 function accessToken(): string | null {
+  const fromBridge = desktop()?.token;
+  if (fromBridge) return fromBridge;
+
   const fromUrl = new URLSearchParams(location.search).get('token');
   if (fromUrl) {
     try {

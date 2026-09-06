@@ -255,7 +255,7 @@ Worth doing on its own, before any window exists. Concrete, located work:
 
 ---
 
-## Phase 2 — the shell `[doing]`
+## Phase 2 — the shell `[done]`
 
 Run it with `npm run app` from the repo root: it builds the dashboard and opens
 the window. On Linux, Electron needs GUI libraries the base image may not carry
@@ -284,10 +284,22 @@ finished reading would miss the resets it exists to catch. The icon is a ring,
 generated rather than fetched — macOS gets a template image so the menu bar can
 recolour it, and saying so is the difference between an icon and a white smudge.
 
-`[done]` **Autostart, where Electron has it.** `setLoginItemSettings` covers
-Windows and macOS and is offered in the tray menu. Linux wants a `.desktop`
-file in `~/.config/autostart`, which Electron does not write, so the item is not
-offered there rather than offered and silently ignored — `[next]` to add.
+`[done]` **Autostart, on all three.** `setLoginItemSettings` covers Windows and
+macOS. Electron has no Linux equivalent because there is no system call to make:
+the desktop environments agree on `~/.config/autostart/tokio.desktop`, and
+honouring it is the whole specification, so tokio writes and removes that file
+itself. Unpackaged the `Exec` line is Electron *plus the app directory*, or
+autostart would launch a bare Electron with nothing in it.
+
+The checkbox reads the filesystem rather than remembering what it last did — the
+file is something a user can delete from outside the application, and a failed
+write then falls back to the truth on its own instead of claiming a setting that
+is not there.
+
+`[open]` **Not verified on a live Linux desktop.** The entry is correct by
+construction and against the spec, including quoting for paths with spaces, and
+was generated under Linux to be sure the separators are right. Nobody has
+watched a session actually start it.
 
 `[done]` **`TOKIO_URL` points the window at a daemon anywhere.** It wins over
 everything else. This is what makes the application testable on Windows before
@@ -296,11 +308,28 @@ transcripts, the CLI and the database over there, and the Windows window can
 show that daemon over the network instead of being an empty shell that cannot
 find anything.
 
-`[next]` **Get the token out of the URL entirely.** Appending it to the query
-string is what the dashboard already understands, so it is what the window does
-today — but an application has no reason to put a secret there at all. Hand it
-over the preload bridge instead, and have the dashboard prefer that when it is
-running as an app.
+`[done]` **The token is out of the URL.** A browser has nowhere to be handed a
+secret, so the dashboard reads it off the query string — which is why `tokio
+start` prints it there, and why it ends up in history, in screenshots and in any
+Referer. An application has somewhere. `main.js` splits the token off the
+address, holds it, and answers a synchronous `tokio:token` from the preload;
+`window.tokioDesktop.token` is what the dashboard prefers. Synchronous because
+`accessToken()` is called on every request, and a promise would push `await`
+through all of it to save a round trip that happens once.
+
+Verified against the running app over CDP: the loaded URL carries no token,
+`/api/status` without one is 401, with the bridge token 200, and the dashboard
+renders.
+
+**A window can be newer than the daemon it is pointed at**, and that is not
+exotic — it is what `TOKIO_URL` is for, and the daemon is what serves the
+dashboard. Taking the token out of the address broke exactly that combination:
+an older page, knowing nothing about the bridge, reported "the daemon is not
+answering", which is a true sentence about the wrong thing. So the preload also
+leaves the token in `sessionStorage`, where the browser flow has always kept it
+and where every version already looks. That puts the secret nowhere it was not
+already, and the bridge stays the preferred source because storage can be
+refused and a window told the token directly should not depend on anything else.
 
 ---
 
