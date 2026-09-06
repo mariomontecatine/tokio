@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { Config } from '../config.ts';
 import { claudeDir } from '../config.ts';
 import type { PlanId } from '../types.ts';
@@ -36,19 +36,39 @@ interface Account {
 }
 
 /**
- * Claude Code keeps this in the home directory, or beside its config directory
- * when one is set.
+ * The account file that belongs to a `.claude` directory, one level up.
  *
- * An explicitly configured directory is the only place we look. Falling back to
- * the home copy would mean that pointing tokio at one Claude installation could
- * silently read the plan of another — reporting numbers for an account the user
- * did not ask about.
+ * Claude Code writes `.claude.json` into `CLAUDE_CONFIG_DIR` when one is set,
+ * which is why the configured directory is looked in first. But a directory can
+ * also be configured to point at an installation whose layout nobody changed —
+ * transcripts inside WSL, reached from Windows — and there the account file sits
+ * in the home directory *beside* `~/.claude`, not inside it. Without this, the
+ * plan for that account silently fails to resolve and the payback quietly
+ * disappears, which is the failure mode this project least wants.
+ *
+ * Only for a directory actually named `.claude`, so this cannot wander into the
+ * parent of some unrelated path and read an account nobody pointed us at — the
+ * rule the single-candidate list exists to keep.
+ */
+function beside(dir: string): string[] {
+  return basename(dir) === '.claude' ? [join(dirname(dir), '.claude.json')] : [];
+}
+
+/**
+ * Claude Code keeps this in the home directory, or in its config directory when
+ * one is set.
+ *
+ * A configured directory still means we never fall back to *this* machine's
+ * home: pointing tokio at one Claude installation and then reading the plan of
+ * another would report numbers for an account nobody asked about. `beside` is
+ * not that fallback — it stays within the installation that was pointed at.
  */
 function accountFile(cfg: Config): Account | null {
   const configured = cfg.claudeConfigDir || process.env.CLAUDE_CONFIG_DIR;
+  const dir = claudeDir(cfg);
   const candidates = configured
-    ? [join(claudeDir(cfg), '.claude.json')]
-    : [join(homedir(), '.claude.json'), join(claudeDir(cfg), '.claude.json')];
+    ? [join(dir, '.claude.json'), ...beside(dir)]
+    : [join(homedir(), '.claude.json'), join(dir, '.claude.json')];
   for (const path of candidates) {
     try {
       const parsed = JSON.parse(readFileSync(path, 'utf8'));

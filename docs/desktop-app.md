@@ -194,10 +194,34 @@ Worth doing on its own, before any window exists. Concrete, located work:
   and PATHEXT; `resolveClaudeAsync` is the one that can ask. Tests inject the
   capture, so the suite never reaches `wsl.exe`.
 
-  `[next]` **Transcripts across the boundary.** `\\wsl$` is reachable from
-  Windows but it is a 9p filesystem: chokidar will likely need polling, and
-  `~/.claude.json` for plan detection is over there too. `claudeConfigDir`
-  already exists to point at it.
+  `[done]` **Transcripts across the boundary — it works, and it is slow enough
+  to change the recommendation.** Discovery now fills `claudeConfigDir` from
+  `wslpath -w "$HOME/.claude"` (asked, not assembled: `\\wsl$` and
+  `\\wsl.localhost` have both been the spelling, and the distribution name is
+  not ours to guess). Verified end to end: a Windows-native daemon reporting
+  real percentages and ingesting from WSL.
+
+  Three things measured on the way, none of them guesses:
+
+  - **`fs.watch` cannot watch 9p at all.** Not unreliable — `EISDIR`, refused
+    outright, zero of two appends seen. With `usePolling` it saw both. And
+    chokidar reports that as an `error` *event*, which the `try/catch` around it
+    never saw: an `error` event with no listener is rethrown, so the real
+    behaviour was the daemon dying at startup, not a degraded watcher. It now
+    handles the error and re-watches with polling, once.
+  - **9p costs a round trip per file, so the price is metadata, not bytes.**
+    Reading the 906-file, 49 MB history takes 27.5s (~1.8 MB/s). Worse, a *warm*
+    scan still costs 13.8s against a cold 26.4s: roughly 906 stats at ~15ms
+    each, paid on every sweep, forever, whether or not anything changed.
+  - **So the bridge is the fallback, not the recommendation.** Running the
+    daemon inside WSL and pointing the window at it over `TOKIO_URL` avoids all
+    of it, and is what this machine has been doing all along. The daemon now
+    says so at startup when it sees a UNC transcript path, because the cost is
+    invisible and the fix is not "wait".
+
+  `[open]` Whether the sweep should back off on a remote path, or use directory
+  mtimes to avoid stat-ing every file. Neither is worth doing before someone
+  actually runs the bridge in anger — the sweep is correct today, only costly.
 
   `[open]` **Two installations at once.** Someone with Claude Code both natively
   on Windows and inside WSL has two sets of transcripts and one account. Read
@@ -206,8 +230,11 @@ Worth doing on its own, before any window exists. Concrete, located work:
 
   `TOKIO_URL` remains a way to *try* the application across the boundary, not
   the answer to any of the above.
-- **`[next]` Watching.** `chokidar` on Windows is fine for local paths; a
-  `\\wsl$` path may need polling.
+- **`[done]` Watching.** Local Windows paths are fine natively; a `\\wsl$` path
+  cannot be watched at all and falls back to polling. See above — the fallback
+  is driven by the error the filesystem returns, not by matching on the path,
+  because which filesystems support change notification is not something a path
+  reliably says.
 - **`[done]` Tests on Windows.** 165 of 165, and `tsc --noEmit` clean. Verified
   on Linux too, since the fixture is shared and a fix for one platform that
   breaks the other is not a fix.

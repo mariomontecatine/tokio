@@ -155,21 +155,21 @@ test('nothing found leaves the config alone and says so', () => {
 
 const WSL_EXE = 'C:\\Windows\\system32\\wsl.exe';
 
-/** A `capture` that answers one command and refuses every other. */
+/** A `capture` that answers the one command asked, and refuses every other. */
 const answers = (stdout: string | null): Capture => async (cmd, args) => {
   assert.equal(cmd, 'wsl.exe');
   // A login shell, or `~/.local/bin` is not on PATH and nothing is found.
-  assert.deepEqual(args, ['--', 'bash', '-lc', 'command -v claude']);
+  assert.deepEqual(args, ['--', 'bash', '-lc', 'command -v claude && wslpath -w "$HOME/.claude"']);
   return stdout;
 };
+
+const FOUND = '/home/me/.local/bin/claude\n\\\\wsl.localhost\\Ubuntu\\home\\me\\.claude\n';
 
 test('the WSL binary is located, because a bare name does not resolve there', async () => {
   // `wsl.exe -- claude` exits 127 on a working install: no login shell, so the
   // PATH that `~/.profile` builds — the one holding ~/.local/bin — is absent.
   // The absolute path is what makes the invocation work.
-  const out = await resolveClaudeAsync(
-    cfg(), WIN, 'win32', fs(WSL_EXE), answers('/home/me/.local/bin/claude\n'),
-  );
+  const out = await resolveClaudeAsync(cfg(), WIN, 'win32', fs(WSL_EXE), answers(FOUND));
   assert.equal(out.how, 'wsl');
   assert.equal(out.cfg.claudeBin, '/home/me/.local/bin/claude');
   assert.deepEqual(out.cfg.claudeLauncher, WSL_LAUNCHER);
@@ -177,6 +177,32 @@ test('the WSL binary is located, because a bare name does not resolve there', as
   const { cmd, argv } = claudeInvocation(out.cfg, ['-p', '/usage']);
   assert.equal(cmd, 'wsl.exe');
   assert.deepEqual(argv, ['--', '/home/me/.local/bin/claude', '-p', '/usage']);
+});
+
+test('the transcripts are found where the CLI is, not where tokio is', async () => {
+  // Left to its own home a Windows tokio reads C:\Users\me\.claude, which for a
+  // WSL install is absent or someone else's — and shows up as "no usage" rather
+  // than as looking in the wrong place.
+  const out = await resolveClaudeAsync(cfg(), WIN, 'win32', fs(WSL_EXE), answers(FOUND));
+  assert.equal(out.cfg.claudeConfigDir, '\\\\wsl.localhost\\Ubuntu\\home\\me\\.claude');
+});
+
+test('a configured transcript directory is a decision and survives discovery', async () => {
+  const set = cfg({ claudeConfigDir: 'D:\\elsewhere\\.claude' });
+  const out = await resolveClaudeAsync(set, WIN, 'win32', fs(WSL_EXE), answers(FOUND));
+  assert.equal(out.cfg.claudeConfigDir, 'D:\\elsewhere\\.claude');
+  assert.equal(out.cfg.claudeBin, '/home/me/.local/bin/claude', 'the binary is still filled in');
+});
+
+test('a binary without a readable path for the transcripts is still a binary', async () => {
+  // `wslpath` is not something to fail the whole detection over: the gauges come
+  // from the CLI and would still work with no transcripts at all.
+  const out = await resolveClaudeAsync(
+    cfg(), WIN, 'win32', fs(WSL_EXE), answers('/home/me/.local/bin/claude\n'),
+  );
+  assert.equal(out.how, 'wsl');
+  assert.equal(out.cfg.claudeBin, '/home/me/.local/bin/claude');
+  assert.equal(out.cfg.claudeConfigDir, null);
 });
 
 test('WSL without Claude Code in it is unknown, not a bridge to nowhere', async () => {

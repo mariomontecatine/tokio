@@ -186,10 +186,29 @@ export const captureStdout: Capture = (cmd, args) =>
  * A shell function or an alias answers `command -v` with its own name rather
  * than a path, so anything that is not absolute is not an answer.
  */
-export async function locateInWsl(capture: Capture = captureStdout): Promise<string | null> {
-  const out = await capture('wsl.exe', ['--', 'bash', '-lc', 'command -v claude']);
-  const first = (out ?? '').split('\n')[0]?.trim() ?? '';
-  return first.startsWith('/') ? first : null;
+export interface WslPlaces {
+  /** The binary, as an absolute path inside the distribution. */
+  bin: string;
+  /** `~/.claude` inside WSL, spelled the way Windows can open it. */
+  claudeDir: string | null;
+}
+
+export async function locateInWsl(capture: Capture = captureStdout): Promise<WslPlaces | null> {
+  // One shell for both answers: the transcripts are only interesting if the CLI
+  // is there, and `&&` makes a missing CLI a non-zero exit rather than a
+  // half-answer. `wslpath -w` is asked rather than a UNC path being assembled
+  // here, because that spelling is WSL's to decide -- `\\wsl$` and
+  // `\\wsl.localhost` have both been it, and the distribution name is not
+  // something to guess at either.
+  const out = await capture('wsl.exe', [
+    '--', 'bash', '-lc', 'command -v claude && wslpath -w "$HOME/.claude"',
+  ]);
+  const lines = (out ?? '').split('\n').map((l) => l.trim());
+  const bin = lines[0] ?? '';
+  if (!bin.startsWith('/')) return null;
+
+  const dir = lines[1] ?? '';
+  return { bin, claudeDir: dir.startsWith('\\\\') ? dir : null };
 }
 
 /**
@@ -239,7 +258,15 @@ export async function resolveClaudeAsync(
   const found = resolveClaude(cfg, env, platform, exists);
   if (found.how !== 'wsl') return found;
 
-  const abs = await locateInWsl(capture);
-  if (!abs) return { cfg, how: 'unknown' };
-  return { cfg: { ...found.cfg, claudeBin: abs }, how: 'wsl' };
+  const wsl = await locateInWsl(capture);
+  if (!wsl) return { cfg, how: 'unknown' };
+
+  // The transcripts live wherever the CLI does. A Windows tokio left to its own
+  // home would look in C:\Users\<me>\.claude, which for a WSL install is either
+  // absent or -- worse -- some other installation's, and would read as "no
+  // usage" rather than as "looking in the wrong place". A configured directory
+  // still wins, on the same rule as the binary: a value set by hand is a
+  // decision, one worked out here is a guess.
+  const claudeConfigDir = cfg.claudeConfigDir ?? wsl.claudeDir;
+  return { cfg: { ...found.cfg, claudeBin: wsl.bin, claudeConfigDir }, how: 'wsl' };
 }

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import { openDb } from './db.ts';
-import { loadConfig, saveConfig, type Config } from './config.ts';
+import { claudeDir, loadConfig, saveConfig, type Config } from './config.ts';
 import { Ingestor } from './ingest/index.ts';
 import { Scheduler } from './queue/scheduler.ts';
 import { createClaudeCodeProvider } from './providers/claudeCode.ts';
@@ -33,6 +33,20 @@ export async function startDaemon(options: DaemonOptions = {}) {
     // Named, not just announced: the path is the thing a reader needs to check
     // when the numbers look wrong, and it is not one they can guess.
     console.log(`tokio: using Claude Code inside WSL (${cfg.claudeBin})`);
+  }
+
+  // Reading transcripts across the WSL boundary works and is slow, and slow in a
+  // way nobody would attribute to the right cause. 9p charges a round trip per
+  // file: measured on a 906-file history, a sweep that touches every one costs
+  // about fourteen seconds whether or not anything changed, on every sweep,
+  // because the cost is metadata rather than bytes. The sweep still finishes and
+  // the numbers are still right — it is worth saying rather than hiding, because
+  // the fix is available and is not "wait".
+  if (/^\\\\/.test(claudeDir(cfg))) {
+    console.log(
+      'tokio: reading transcripts over the WSL filesystem bridge, which is slow.\n' +
+      '       Running tokio inside WSL and pointing the app at it with TOKIO_URL is faster.',
+    );
   }
   if (options.host) cfg.host = options.host;
   if (options.port) cfg.port = options.port;

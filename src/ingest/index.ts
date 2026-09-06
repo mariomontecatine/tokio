@@ -199,24 +199,56 @@ export class Ingestor extends EventEmitter {
     this.sweepTimer.unref();
   };
 
-  async start(): Promise<void> {
-    this.stopped = false;
-    this.scan();
-    // chokidar catches the common case within a tenth of a second; the sweep is
-    // the safety net for WSL and network mounts, where inotify events are
-    // unreliable. No awaitWriteFinish: a transcript is appended to for as long
-    // as a response takes, so waiting for the writing to stop would hold every
-    // update back until the answer was over — and a half-written last line is
-    // already handled by reading only as far as the last newline.
+  /**
+   * Watch the transcripts, and fall back to polling when watching them fails.
+   *
+   * Which filesystems support change notification is not something to guess at
+   * from a path. Transcripts inside WSL, read from Windows over `\\wsl.localhost`,
+   * are on 9p: `fs.watch` there does not merely miss events, it refuses outright
+   * with `EISDIR` and reports nothing ever again. Measured — native watching saw
+   * zero of two appends, polling saw both.
+   *
+   * So the answer comes from behaviour rather than from a pattern: try the cheap
+   * way, and when the filesystem says no, poll it instead. Once — a second
+   * failure is the sweep's problem, not a reason to keep reopening watchers.
+   *
+   * chokidar reports this as an `error` *event*, which is why the `try/catch`
+   * that used to be here never saw it. An `error` event with no listener is
+   * rethrown by EventEmitter, so what actually happened on Windows was not a
+   * degraded watcher: it was the daemon going down at startup.
+   */
+  private async startWatching(dir: string, polling: boolean): Promise<void> {
     try {
       const { watch } = await import('chokidar');
-      this.watcher = watch(join(claudeDir(this.cfg), 'projects'), {
+      const watcher = watch(dir, {
         ignoreInitial: true,
         depth: 2,
-      }).on('all', (_event: string, path?: string) => this.request(path)) as unknown as { close(): Promise<void> };
+        ...(polling ? { usePolling: true, interval: 700 } : {}),
+      });
+      watcher.on('all', (_event: string, path?: string) => this.request(path));
+      watcher.on('error', () => {
+        if (polling || this.stopped) return;
+        void watcher.close().catch(() => {});
+        this.watcher = null;
+        void this.startWatching(dir, true);
+      });
+      this.watcher = watcher as unknown as { close(): Promise<void> };
     } catch {
       // chokidar is optional; the sweep is enough on its own.
     }
+  }
+
+  async start(): Promise<void> {
+    this.stopped = false;
+    this.scan();
+    // chokidar catches the common case within a tenth of a second; the sweep
+    // stays the safety net under it, and is what carries the load on any
+    // filesystem the watcher cannot read at all. No awaitWriteFinish: a
+    // transcript is appended to for as long as a response takes, so waiting for
+    // the writing to stop would hold every update back until the answer was
+    // over — and a half-written last line is already handled by reading only as
+    // far as the last newline.
+    await this.startWatching(join(claudeDir(this.cfg), 'projects'), false);
     this.sweepTimer = setTimeout(this.sweep, this.sweepDelay());
     this.sweepTimer.unref();
   }
