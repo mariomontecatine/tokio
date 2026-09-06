@@ -220,11 +220,11 @@ Worth doing on its own, before any window exists. Concrete, located work:
   which is the launcher doing exactly the job it was added for — so the suite
   exercises that path as a side effect instead of only asserting about it.
 
-  **Node must be ≥ 22.13, not the `>= 22.5` that `package.json` and `CLAUDE.md`
-  still claim.** `node:sqlite` was behind `--experimental-sqlite` until then, so
-  22.5–22.12 fails at import with `ERR_UNKNOWN_BUILTIN_MODULE` and no hint as to
-  why — seven test files at once, on a machine whose only sin was an LTS Node.
-  Worth correcting in both places.
+  **Node must be ≥ 22.13**, now corrected in `package.json` and `CLAUDE.md`,
+  which both claimed `>= 22.5`. `node:sqlite` landed in 22.5 but stayed behind
+  `--experimental-sqlite` until 22.13, so 22.5–22.12 fails at import with
+  `ERR_UNKNOWN_BUILTIN_MODULE` and no hint as to why — seven test files at once,
+  on a machine whose only sin was an LTS Node.
 
 ---
 

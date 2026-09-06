@@ -12,8 +12,10 @@ the design decisions and is kept accurate.
   Anything that needs code generation fails at import: no `enum`, no parameter properties
   (`constructor(private db: Db)`), no decorators, no `namespace`. Declare fields and assign them
   in the constructor body.
-- **`node:sqlite` is built in** (Node ≥ 22.5) and is why there are no native dependencies. Rows
+- **`node:sqlite` is built in** (Node ≥ 22.13) and is why there are no native dependencies. Rows
   come back as null-prototype objects, so cast through `unknown` when typing query results.
+  It landed in 22.5 but stayed behind `--experimental-sqlite` until 22.13, so 22.5–22.12 fails at
+  import with `ERR_UNKNOWN_BUILTIN_MODULE` and no hint as to why — measured, not assumed.
 - **Transcripts repeat each assistant response** several times with the same `requestId`. Any new
   code that reads them must deduplicate on `messageId` + `requestId`, or usage triples.
 - Relative imports use the `.ts` extension; `rewriteRelativeImportExtensions` fixes them on build.
