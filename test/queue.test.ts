@@ -12,13 +12,16 @@ import { computeStatus } from '../src/meter/index.ts';
 import { saveProbe } from '../src/usage/store.ts';
 import type { Job, Status } from '../src/types.ts';
 
-const FAKE = join(import.meta.dirname, 'fake-claude.sh');
+const FAKE = join(import.meta.dirname, 'fake-claude.mjs');
 
 function setup(overrides: Partial<Config> = {}) {
   const db = openDb(':memory:');
   const cfg: Config = {
     ...loadConfig(),
     claudeBin: FAKE,
+    // The fixture is a script, so it needs an interpreter in front of it. This
+    // is the launcher doing the job it exists for, on the suite's own terms.
+    claudeLauncher: [process.execPath],
     plan: 'max5',
     reservePct: 10,
     concurrency: 1,

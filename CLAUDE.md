@@ -31,10 +31,12 @@ started popping real toasts at whoever ran `npm test`. Notification tests use `d
 and the crash-safety of a missing binary is tested through `runDetached` against a name no system
 has.
 
-The executor is tested against `test/fake-claude.sh`, which
+The executor is tested against `test/fake-claude.mjs`, which
 emits the same `stream-json` shape as the real CLI and can simulate a rate limit
 (`TOKIO_FAKE_MODE=ratelimit`) or a crash (`TOKIO_FAKE_MODE=crash`). Extend that script rather than
-reaching for the real binary.
+reaching for the real binary. It is Node rather than a shell script because Windows cannot spawn a
+`.sh` at all, and it runs through `claudeLauncher: [process.execPath]` — the same launcher vector
+that reaches Claude Code inside WSL, so the fixture exercises that path as a side effect.
 
 Fixtures in `test/fixtures/transcript.jsonl` mirror real transcript shapes, duplicates included.
 

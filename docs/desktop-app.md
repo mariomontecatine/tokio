@@ -208,19 +208,23 @@ Worth doing on its own, before any window exists. Concrete, located work:
   the answer to any of the above.
 - **`[next]` Watching.** `chokidar` on Windows is fine for local paths; a
   `\\wsl$` path may need polling.
-- **`[doing]` Tests on Windows.** 161 of 165 pass, and `tsc --noEmit` is clean.
-  The four that fail are all in `queue.test.ts` and fail the same way: the
-  executor is tested against `test/fake-claude.sh`, and Windows cannot spawn a
-  `.sh` — `spawn EFTYPE`. It is the same lesson as the shim, from the other
-  side: a file is only executable on Windows if something knows how to run it.
-  The fixture needs an interpreter in front of it there, which is what
-  `claudeLauncher` is already for.
+- **`[done]` Tests on Windows.** 165 of 165, and `tsc --noEmit` clean. Verified
+  on Linux too, since the fixture is shared and a fix for one platform that
+  breaks the other is not a fix.
 
-  Two notes for whoever does it. Node must be ≥ 22.13, not the `>= 22.5` in
-  `package.json` and `CLAUDE.md`: `node:sqlite` was behind
-  `--experimental-sqlite` until then, so 22.5–22.12 fails at import with
-  `ERR_UNKNOWN_BUILTIN_MODULE` and no hint as to why. And `npm test` must keep
-  costing nothing and touching nothing, on this platform too.
+  Four failed, all in `queue.test.ts`, all the same way: the executor was tested
+  against `test/fake-claude.sh` and Windows cannot spawn a `.sh` — `spawn
+  EFTYPE`. The same lesson as the npm shim, from the other side: a file is
+  executable on Windows only if something knows how to run it. The fixture is
+  now `test/fake-claude.mjs`, run through `claudeLauncher: [process.execPath]`,
+  which is the launcher doing exactly the job it was added for — so the suite
+  exercises that path as a side effect instead of only asserting about it.
+
+  **Node must be ≥ 22.13, not the `>= 22.5` that `package.json` and `CLAUDE.md`
+  still claim.** `node:sqlite` was behind `--experimental-sqlite` until then, so
+  22.5–22.12 fails at import with `ERR_UNKNOWN_BUILTIN_MODULE` and no hint as to
+  why — seven test files at once, on a machine whose only sin was an LTS Node.
+  Worth correcting in both places.
 
 ---
 
