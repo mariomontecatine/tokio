@@ -12,7 +12,7 @@
  * the dashboard's own masthead is the drag region, so there is no second bar
  * stacked above the first.
  */
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen, shell, nativeTheme } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
@@ -85,6 +85,8 @@ async function resolveUrl() {
 let quitting = false;
 let tray = null;
 let windowRef = null;
+/** Set once the daemon is resolved, so a second launch can reopen the window. */
+let currentUrl = null;
 
 function showWindow(url) {
   if (windowRef && !windowRef.isDestroyed()) {
@@ -145,12 +147,34 @@ function buildTray(url) {
   tray.on('click', () => showWindow(url));
 }
 
+/**
+ * A preferred size, clamped to the screen it will actually open on.
+ *
+ * 980x900 was a preference written as a guarantee, and on a 1280x672 work area
+ * it put 228 pixels of window below the bottom of the screen — the footer
+ * cut off, on a frameless window with no title bar to drag it back up by.
+ *
+ * The work area, not the resolution: it already excludes the taskbar, which is
+ * the part that makes a full-height window wrong rather than merely tight. The
+ * margin keeps the window off the edges, so it reads as a window rather than as
+ * something that failed to maximise.
+ *
+ * The minimums are clamped too. Left at fixed values they would re-introduce
+ * exactly this bug on a smaller display, by forcing back the size the clamp had
+ * just taken away.
+ */
+function windowSize() {
+  const { width: aw, height: ah } = screen.getPrimaryDisplay().workAreaSize;
+  const margin = 48;
+  const width = Math.min(980, aw - margin);
+  const height = Math.min(900, ah - margin);
+  return { width, height, minWidth: Math.min(560, width), minHeight: Math.min(620, height) };
+}
+
 function createWindow(url) {
   const win = new BrowserWindow({
-    width: 980,
-    height: 900,
-    minWidth: 560,
-    minHeight: 620,
+    ...windowSize(),
+    center: true,
     show: false,
     frame: false,
     // Mica needs something to show through.
@@ -231,11 +255,14 @@ ipcMain.on('window:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  // Launching it again is a request to see it, and `showWindow` is the only
+  // thing that knows what that means in every state the window can be in.
+  // Focusing the window directly was not: closing hides rather than destroys, a
+  // hidden window is still in `getAllWindows()` and is not `isMinimized()`, so
+  // this focused something invisible and the launch did nothing at all -- the
+  // exact state the tray is designed to leave behind.
   app.on('second-instance', () => {
-    const [win] = BrowserWindow.getAllWindows();
-    if (!win) return;
-    if (win.isMinimized()) win.restore();
-    win.focus();
+    if (currentUrl) showWindow(currentUrl);
   });
 
   nativeTheme.themeSource = 'dark';
@@ -254,6 +281,7 @@ if (!app.requestSingleInstanceLock()) {
         : `tokio: attached to the daemon already running at ${shown}`,
     );
 
+    currentUrl = url;
     buildTray(url);
     showWindow(url);
 
