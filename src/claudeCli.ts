@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import type { Config } from './config.ts';
 
 /** The shipped default, and the marker for "nobody has chosen". */
@@ -151,6 +152,46 @@ export function discoverClaude(
   return null;
 }
 
+/** Run something and read its stdout. Injected so no test reaches `wsl.exe`. */
+export type Capture = (cmd: string, args: string[]) => Promise<string | null>;
+
+/** `null` for anything that is not a clean exit: a failure is not an answer. */
+export const captureStdout: Capture = (cmd, args) =>
+  new Promise((resolve) => {
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    child.stdout.on('data', (chunk) => (out += chunk));
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => resolve(code === 0 ? out : null));
+  });
+
+/**
+ * Ask WSL where its Claude Code actually is.
+ *
+ * `wsl.exe -- claude` looks like it should work and does not: it runs the
+ * command without a login shell, so the PATH assembled by `~/.profile` is not
+ * there — and `~/.local/bin`, where Claude Code's own installer puts the
+ * binary, is on PATH for precisely that reason. Measured on Windows against a
+ * working install: `wsl.exe -- claude -p /usage` exits 127 with
+ * `claude: command not found`, while the same CLI answers fine from a login
+ * shell. Shipping `['wsl.exe', '--']` with a bare `claude` would therefore have
+ * failed on the ordinary install and looked like Claude Code was missing.
+ *
+ * So a login shell is used once, to *locate* it, and the absolute path goes
+ * into argv from then on. The shell never sees the caller's arguments: handing
+ * a composed command line to something that will re-split it is the bug the
+ * launcher exists to avoid, and that reasoning does not stop applying just
+ * because the shell is convenient here.
+ *
+ * A shell function or an alias answers `command -v` with its own name rather
+ * than a path, so anything that is not absolute is not an answer.
+ */
+export async function locateInWsl(capture: Capture = captureStdout): Promise<string | null> {
+  const out = await capture('wsl.exe', ['--', 'bash', '-lc', 'command -v claude']);
+  const first = (out ?? '').split('\n')[0]?.trim() ?? '';
+  return first.startsWith('/') ? first : null;
+}
+
 /**
  * The config, with discovery filled in where the user has not spoken.
  *
@@ -170,4 +211,35 @@ export function resolveClaude(
   const found = discoverClaude(env, platform, exists);
   if (!found) return { cfg, how: 'unknown' };
   return { cfg: { ...cfg, claudeBin: found.bin, claudeLauncher: found.launcher }, how: found.how };
+}
+
+/**
+ * The same answer, with the one part of it that cannot be read off a filesystem.
+ *
+ * `resolveClaude` stays synchronous and pure because everything it decides is
+ * decidable from PATH and PATHEXT. The WSL branch is the exception: the presence
+ * of `wsl.exe` says a bridge exists, not that Claude Code is on the far side of
+ * it, and the only way to learn the difference is to ask. That is why the
+ * synchronous version documents its WSL result as a candidate.
+ *
+ * Asking turns it into a finding, in both directions. When the binary is there
+ * the absolute path replaces the bare name, which is what makes the invocation
+ * work at all. When it is not, this reports `unknown` and hands back the config
+ * untouched — a bridge to a distribution with no Claude Code in it is not a
+ * place to run Claude Code, and saying so once at startup is the alternative to
+ * a spawn that fails every three minutes.
+ */
+export async function resolveClaudeAsync(
+  cfg: Config,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: string = process.platform,
+  exists: (p: string) => boolean = (p) => existsSync(p),
+  capture: Capture = captureStdout,
+): Promise<{ cfg: Config; how: Discovery['how'] | 'configured' | 'unknown' }> {
+  const found = resolveClaude(cfg, env, platform, exists);
+  if (found.how !== 'wsl') return found;
+
+  const abs = await locateInWsl(capture);
+  if (!abs) return { cfg, how: 'unknown' };
+  return { cfg: { ...found.cfg, claudeBin: abs }, how: 'wsl' };
 }

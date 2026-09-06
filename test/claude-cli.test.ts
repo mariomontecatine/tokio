@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { claudeInvocation, discoverClaude, findOnPath, resolveClaude, WSL_LAUNCHER } from '../src/claudeCli.ts';
+import {
+  type Capture,
+  claudeInvocation,
+  discoverClaude,
+  findOnPath,
+  resolveClaude,
+  resolveClaudeAsync,
+  WSL_LAUNCHER,
+} from '../src/claudeCli.ts';
 import { loadConfig, type Config } from '../src/config.ts';
 
 const cfg = (over: Partial<Config> = {}): Config => ({ ...loadConfig(), ...over });
@@ -141,4 +149,58 @@ test('nothing found leaves the config alone and says so', () => {
   const out = resolveClaude(cfg(), { PATH: '/usr/bin' }, 'linux', fs());
   assert.equal(out.how, 'unknown');
   assert.equal(out.cfg.claudeBin, 'claude');
+});
+
+// ---------- asking WSL, rather than assuming it ----------
+
+const WSL_EXE = 'C:\\Windows\\system32\\wsl.exe';
+
+/** A `capture` that answers one command and refuses every other. */
+const answers = (stdout: string | null): Capture => async (cmd, args) => {
+  assert.equal(cmd, 'wsl.exe');
+  // A login shell, or `~/.local/bin` is not on PATH and nothing is found.
+  assert.deepEqual(args, ['--', 'bash', '-lc', 'command -v claude']);
+  return stdout;
+};
+
+test('the WSL binary is located, because a bare name does not resolve there', async () => {
+  // `wsl.exe -- claude` exits 127 on a working install: no login shell, so the
+  // PATH that `~/.profile` builds — the one holding ~/.local/bin — is absent.
+  // The absolute path is what makes the invocation work.
+  const out = await resolveClaudeAsync(
+    cfg(), WIN, 'win32', fs(WSL_EXE), answers('/home/me/.local/bin/claude\n'),
+  );
+  assert.equal(out.how, 'wsl');
+  assert.equal(out.cfg.claudeBin, '/home/me/.local/bin/claude');
+  assert.deepEqual(out.cfg.claudeLauncher, WSL_LAUNCHER);
+
+  const { cmd, argv } = claudeInvocation(out.cfg, ['-p', '/usage']);
+  assert.equal(cmd, 'wsl.exe');
+  assert.deepEqual(argv, ['--', '/home/me/.local/bin/claude', '-p', '/usage']);
+});
+
+test('WSL without Claude Code in it is unknown, not a bridge to nowhere', async () => {
+  // The presence of wsl.exe says a bridge exists, not that anything is across
+  // it. Reporting that once beats failing a spawn every three minutes.
+  const out = await resolveClaudeAsync(cfg(), WIN, 'win32', fs(WSL_EXE), answers(null));
+  assert.equal(out.how, 'unknown');
+  assert.equal(out.cfg.claudeBin, 'claude');
+  assert.equal(out.cfg.claudeLauncher, null);
+});
+
+test('a shell function is not a path, so it is not an answer', async () => {
+  // `command -v` answers for an alias or a function with its own name.
+  const out = await resolveClaudeAsync(cfg(), WIN, 'win32', fs(WSL_EXE), answers('claude\n'));
+  assert.equal(out.how, 'unknown');
+});
+
+test('nothing is asked of WSL when the answer came off the filesystem', async () => {
+  // A native install and a configured binary both settle it without a process.
+  const refuse: Capture = async () => assert.fail('WSL was consulted needlessly');
+  const shim = 'C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd';
+
+  assert.equal((await resolveClaudeAsync(cfg(), WIN, 'win32', fs(shim, WSL_EXE), refuse)).how, 'path-shim');
+
+  const set = cfg({ claudeBin: '/opt/claude/bin/claude' });
+  assert.equal((await resolveClaudeAsync(set, WIN, 'win32', fs(WSL_EXE), refuse)).how, 'configured');
 });

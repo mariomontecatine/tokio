@@ -89,21 +89,28 @@ artefact, not a finding**: passing `--disable-gpu` *and*
 rasterize with. `--disable-gpu` alone renders correctly under WSLg, and the
 window has since been captured showing live data.
 
-### `claude -p "/usage"` on native Windows `[blocked]` — the one open item
+### `claude -p "/usage"` read from Windows `[done]`
 
-Could not be tested from here: no native-Windows Claude Code is installed on
-this machine (`find /mnt/c/Users -iname "claude*.cmd"` finds nothing), and the
-CLI in use runs inside WSL. Run this on a Windows machine with Claude Code
-installed before starting phase 1:
+Run from native Windows against the CLI in WSL, which is this machine's
+topology. `probeUsage` returned `sessionPct` and `weekPct` with `error: null`,
+so the `Current session: N% used · resets …` line that `parseUsageText` in
+`src/usage/probe.ts:66` matches survives the crossing intact. **The regex is the
+contract and the contract holds.**
 
-```powershell
-claude -p "/usage" --output-format json
-```
+Two things that came with it, neither a surprise once seen:
 
-What matters is whether the reply still contains the `Current session: N% used ·
-resets …` line that `parseUsageText` in `src/usage/probe.ts:66` matches. The
-regex is the contract; if Windows phrases it differently, that is a phase 1 task
-and not a surprise.
+- `opusPct` comes back `null`. There is no `Current week (Opus…)` line for a
+  plan that does not meter Opus separately, so the absence is the truth and not
+  a parse failure. Anything reading that field has to keep treating `null` as an
+  answer.
+- What was verified is the invocation, not the phrasing on every plan. A plan
+  with an Opus line, or a future wording change, is still the same single point
+  of failure it always was.
+
+`[blocked]` **The native-shim route.** `cmd.exe /d /s /c claude.cmd -p /usage`
+is still untested, because no native-Windows Claude Code is installed here —
+only the WSL one. Its construction is covered by the suite; whether Windows
+answers it needs a machine that has the shim.
 
 ---
 
@@ -132,9 +139,9 @@ Worth doing on its own, before any window exists. Concrete, located work:
   A configured `claudeBin` always wins, the same rule the plan follows.
   Not finding anything is a real answer and says so at startup rather than
   failing a spawn every three minutes.
-  `[blocked]` **Verify a real spawn on Windows.** The construction is tested;
-  whether `cmd.exe /d /s /c <shim> -p /usage` actually returns the usage text
-  needs the platform.
+  `[done]` **A real spawn on Windows, through WSL.** `wsl.exe -- <abs path> -p
+  /usage` runs from native Windows and parses. The shim route is still
+  `[blocked]` on a machine that has one — see phase 0.
 - **`[doing]` Where Claude Code lives.** Not a WSL question — a topology
   question, and WSL is one of three. All three are ordinary and all three have
   to work:
@@ -160,9 +167,32 @@ Worth doing on its own, before any window exists. Concrete, located work:
   resolved on the far side of a launcher. Its separator test was `/` alone,
   which never matches a Windows path, so an absolute one there went unchecked.
 
-  `[next]` **Detection.** The launcher exists; nothing sets it. First run should
-  look for Claude Code natively, then — on Windows — in WSL, and say what it
-  found rather than making the user discover the config key.
+  `[done]` **Detection.** The daemon looks for Claude Code natively, then — on
+  Windows — in WSL, fills in what it found, and names it at startup instead of
+  leaving the user to discover a config key.
+
+  The finding that made this more than plumbing: **`wsl.exe -- claude` does not
+  work, and looks like it should.** It runs the command without a login shell,
+  so the PATH that `~/.profile` builds is absent — and `~/.local/bin`, where
+  Claude Code's installer puts the binary, is on PATH for exactly that reason.
+  Measured against a working install: exit 127, `claude: command not found`,
+  while the same CLI answers fine from a login shell. `WSL_LAUNCHER` with a bare
+  `claude` would therefore have failed on the ordinary install and looked to the
+  user like Claude Code was missing.
+
+  So a login shell is used **once, to locate it** (`command -v claude`), and the
+  absolute path goes into argv from then on. The shell never sees the caller's
+  arguments — that is the same rule the launcher exists to keep, and it does not
+  stop applying because a shell happens to be convenient here.
+
+  This also turns the WSL branch from a candidate into a finding in both
+  directions: `wsl.exe` existing means a bridge exists, not that anything is
+  across it, and a distribution with no Claude Code in it now reports `unknown`
+  at startup rather than failing a spawn every three minutes.
+
+  `resolveClaude` stays synchronous and pure for everything decidable from PATH
+  and PATHEXT; `resolveClaudeAsync` is the one that can ask. Tests inject the
+  capture, so the suite never reaches `wsl.exe`.
 
   `[next]` **Transcripts across the boundary.** `\\wsl$` is reachable from
   Windows but it is a 9p filesystem: chokidar will likely need polling, and
@@ -178,8 +208,19 @@ Worth doing on its own, before any window exists. Concrete, located work:
   the answer to any of the above.
 - **`[next]` Watching.** `chokidar` on Windows is fine for local paths; a
   `\\wsl$` path may need polling.
-- **`[next]` Tests on Windows.** The suite must pass there, under the same rule
-  it passes here: no tokens, no touching the machine.
+- **`[doing]` Tests on Windows.** 161 of 165 pass, and `tsc --noEmit` is clean.
+  The four that fail are all in `queue.test.ts` and fail the same way: the
+  executor is tested against `test/fake-claude.sh`, and Windows cannot spawn a
+  `.sh` — `spawn EFTYPE`. It is the same lesson as the shim, from the other
+  side: a file is only executable on Windows if something knows how to run it.
+  The fixture needs an interpreter in front of it there, which is what
+  `claudeLauncher` is already for.
+
+  Two notes for whoever does it. Node must be ≥ 22.13, not the `>= 22.5` in
+  `package.json` and `CLAUDE.md`: `node:sqlite` was behind
+  `--experimental-sqlite` until then, so 22.5–22.12 fails at import with
+  `ERR_UNKNOWN_BUILTIN_MODULE` and no hint as to why. And `npm test` must keep
+  costing nothing and touching nothing, on this platform too.
 
 ---
 
