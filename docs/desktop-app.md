@@ -370,9 +370,33 @@ hint of depth at the edges, not a wallpaper behind a dashboard that spends three
 colours saying whether you make it to the reset. Take that number to 1 and the
 window is solid again.
 
-`[next]` **Confirm Mica actually lands**, now that there is something for it to
-land on. If the machine is Windows 10 it never can — the material does not exist
-before Windows 11 — in which case gate the alpha on the build, or drop it.
+`[done]` **Mica lands — and was buried a third time, by its own fix.** The rule
+that made room for the material set the translucent ground on `html` *and*
+`body`, and both painted it: `body`'s background only propagates to the canvas
+while `html` has none, so giving `html` one turns `body` into an ordinary box
+painted over it. Two passes at 90% compose to **99%**, which is a solid window
+with extra steps. `html` carries the ground now and `body` is explicitly
+cleared.
+
+Measured on Windows 11 (build 26200), transparency on, energy saver off — both
+checked, because either would have explained a negative and neither did:
+
+| ground alpha | sampled window background |
+|---|---|
+| 0.99 (the bug) | (11,13,15) — indistinguishable from the ground |
+| 0.90 (shipped) | (13,15,17) |
+| 0.15 (probe) | (22.6) at one position, (21.0) at another |
+
+The direction is the proof. The ground is `#0b0d10` = (11,13,16); over black,
+*lowering* the alpha would make the window darker. It gets lighter, so something
+lighter is behind it — and at 0.15 it changes when the window moves, which a
+flat compositor colour would not. That is the wallpaper.
+
+`[open]` **Whether 0.9 is still the number.** It was chosen while the effective
+alpha was 0.99, so it was calibrated against something invisible. At 0.9 the
+material contributes about two levels per channel. That may be exactly the hint
+of depth intended, or it may now be worth less ground — but it is a judgement
+about how the product should look, and belongs to whoever owns that.
 
 `[blocked]` **macOS vibrancy.** Declared, and nothing has run on a Mac yet. The
 same trap applies: `vibrancy` will be buried under the page's ground exactly as

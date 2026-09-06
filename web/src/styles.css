@@ -1079,5 +1079,27 @@ body:has([data-app]) ::-webkit-scrollbar-thumb:hover {
 html:has([data-app="win32"]),
 body:has([data-app="win32"]) {
   --ground-alpha: 0.9;
+}
+
+/*
+ * One layer, not two — and this is the third time the material has been buried,
+ * the second time by its own fix.
+ *
+ * The rule above once set this background on `html` and `body` together. Both
+ * then painted it: `body`'s background only propagates to the canvas while
+ * `html` has none, so giving `html` one turns `body` into an ordinary box
+ * painted over it. Two passes at 90% compose to 99%, which is a solid window
+ * with extra steps — measured in the running app, where moving it across the
+ * desktop did not shift a single channel.
+ *
+ * So `html` carries the ground and `body` is explicitly cleared. `body` is the
+ * one to clear because the canvas is what has to be see-through for Mica to
+ * reach the page at all.
+ */
+html:has([data-app="win32"]) {
   background: color-mix(in srgb, var(--ground) calc(var(--ground-alpha) * 100%), transparent);
+}
+
+body:has([data-app="win32"]) {
+  background: transparent;
 }
