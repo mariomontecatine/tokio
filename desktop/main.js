@@ -20,8 +20,14 @@ const { pathToFileURL } = require('node:url');
 
 const DIST = pathToFileURL(path.join(__dirname, '..', 'dist')).href;
 
-/** The ground colour from web/src/styles.css, so the window never flashes white. */
+/**
+ * Both ground colours from web/src/styles.css, so the window never flashes the
+ * wrong one. Kept in step with `--ground` by hand: there is no build step
+ * shared between the stylesheet and the main process, and one that existed only
+ * to carry two hex values would cost more than it saves.
+ */
 const GROUND = '#0b0d10';
+const GROUND_LIGHT = '#edf0f4';
 
 /**
  * Attach to a daemon that is already running, rather than fighting it for the
@@ -273,7 +279,12 @@ function createWindow(url) {
     // colour lets it reach the page, which then decides how much of it to let
     // through. Everywhere else the solid ground stays: it is what stops the
     // window flashing white before the first paint.
-    backgroundColor: process.platform === 'win32' ? '#00000000' : GROUND,
+    // And the ground it falls back to is whichever one the page is about to
+    // paint: a dark colour under a light theme is a black flash before the
+    // first frame, which is the exact thing this option exists to prevent.
+    backgroundColor: process.platform === 'win32'
+      ? '#00000000'
+      : (nativeTheme.shouldUseDarkColors ? GROUND : GROUND_LIGHT),
     // A pale 4px band along the left, right and bottom shows up under WSLg.
     // It is the window manager's resize border around a frameless window, not
     // anything this code draws: `capturePage` comes back dark to all four
@@ -358,7 +369,11 @@ if (!app.requestSingleInstanceLock()) {
     if (currentUrl) showWindow(currentUrl);
   });
 
-  nativeTheme.themeSource = 'dark';
+  // `themeSource` stays at its default of 'system'. Setting it to 'dark' forced
+  // `prefers-color-scheme: dark` on the page regardless of the machine, which
+  // made the light palette unreachable inside the application while working
+  // perfectly in a browser tab.
+  nativeTheme.themeSource = 'system';
 
   app.on('before-quit', () => { quitting = true; });
 

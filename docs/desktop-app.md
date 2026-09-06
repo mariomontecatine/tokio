@@ -410,7 +410,35 @@ back dark to all four edges, so the band is outside the web contents entirely.
 and neither was left in the code — a workaround that does not work is worse than
 the artefact. Windows draws this frame through DWM and does not have it.
 
-`[next]` Light theme from the system, `prefers-reduced-motion`.
+`[done]` **Light theme from the system.** The application could not reach it at
+all: `nativeTheme.themeSource` was pinned to `'dark'`, which forces
+`prefers-color-scheme: dark` on the page whatever the machine says — so the
+light palette would have worked in a browser tab and never in the window.
+
+Only tokens change, and the light ramp keeps the dark one's *ordering* —
+`--ground` furthest back, `--surface-2` most raised, in both — so every existing
+rule keeps its meaning without being reconsidered. Inverting the ramp instead
+would have quietly turned every raised element into a recessed one. There were
+four hardcoded colours outside the tokens; two were shadows, now tokens as well,
+because a shadow tuned to read on near-black is a smudge on near-white.
+
+The three state colours are the thing that could not simply be reused. They are
+the message here, and they are tuned against near-black: `--ease` at `#2fd98a`
+carries 10.6:1 on the dark ground and **1.6:1 on white**, which is not a warning
+anybody can read. The light values were picked against the worst background they
+land on rather than against white — ease 4.72, tight 5.19, over 4.92, parked
+5.54. `--ink-faint` lands at 3.43, the one value under AA for body text,
+deliberately: it is 3.35 in the dark theme, and lifting it here would make the
+light theme louder than the dark one rather than equivalent to it.
+
+Verified by emulating the media query against the running app rather than by
+changing the machine's settings, in both directions, with a capture of each.
+
+`[done]` **`prefers-reduced-motion`** was already covered — a universal rule
+collapsing every animation and transition, `scroll-behavior`, the `.reveal`
+class, and a JS check in `smoothScroll.ts`. Confirmed rather than assumed:
+emulated, the ring's transition goes from 0.7s to 1e-05s and its animation from
+0.62s to the same.
 
 The bar the user named is Claude Desktop for Windows. Treat it as the reference.
 

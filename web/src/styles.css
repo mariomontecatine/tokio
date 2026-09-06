@@ -37,7 +37,61 @@
   --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, 'Cascadia Mono', 'Roboto Mono', monospace;
 
   --gap: 34px;
+
+  /* Tokens rather than literals so the light theme can soften them. A shadow
+     tuned to read on near-black is a smudge on near-white. */
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow-float: 0 6px 20px rgb(0 0 0 / 0.4);
+
   color-scheme: dark;
+}
+
+/*
+ * The same interface in daylight.
+ *
+ * Only the tokens change. Every rule below keeps working because the light
+ * palette preserves the dark one's *ordering*: `--ground` is the furthest back
+ * and `--surface-2` the most raised in both, so `background: var(--surface-2)`
+ * still means "lifted" without a single rule being reconsidered. Inverting the
+ * ramp instead would have quietly turned every raised element into a recessed
+ * one.
+ *
+ * The three state colours could not simply be reused. They are the message
+ * here — the ring and the verdict sentence say the same thing in the same
+ * colour — and the dark values are tuned against near-black: `--ease` at
+ * #2fd98a carries 10.6:1 there and 1.6:1 on white, which is not a warning
+ * anybody can read. The light values are darker and were chosen against the
+ * *worst* background they land on, `--ground`, not against white:
+ *
+ *   ease #097a4a 4.72   tight #8a5a00 5.19   over #c62828 4.92   parked 5.54
+ *
+ * `--ink-faint` sits at 3.43, which is the one value below AA for body text —
+ * deliberately, because it is 3.35 in the dark theme too. It is used for text
+ * that is deliberately quiet, and making it darker here would make the light
+ * theme louder than the dark one rather than equivalent to it.
+ */
+@media (prefers-color-scheme: light) {
+  :root {
+    --ground: #edf0f4;
+    --surface: #f7f8fa;
+    --surface-2: #ffffff;
+    --hairline: #d5dae2;
+    --hairline-soft: #e3e7ed;
+
+    --ink: #11151c;
+    --ink-dim: #565f6d;
+    --ink-faint: #79818f;
+
+    --ease: #097a4a;
+    --tight: #8a5a00;
+    --over: #c62828;
+    --parked: #3a55c8;
+
+    --shadow-raised: 0 1px 2px rgb(15 20 30 / 0.12);
+    --shadow-float: 0 6px 20px rgb(15 20 30 / 0.16);
+
+    color-scheme: light;
+  }
 }
 
 .tone-ease { --tone: var(--ease); }
@@ -647,7 +701,7 @@ html {
   height: calc(100% - 4px);
   border-radius: 999px;
   background: var(--surface-2);
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+  box-shadow: var(--shadow-raised);
   transition: transform 420ms var(--swift);
 }
 .segmented[data-active='en'] .segmented-pill { transform: translateX(34px); }
@@ -928,7 +982,7 @@ html {
   border: 1px solid var(--hairline);
   border-radius: 7px;
   background: var(--surface-2);
-  box-shadow: 0 6px 20px rgb(0 0 0 / 0.4);
+  box-shadow: var(--shadow-float);
   font-family: var(--mono);
   font-size: 11px;
   color: var(--ink);
