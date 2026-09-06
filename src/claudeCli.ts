@@ -1,4 +1,8 @@
+import { existsSync } from 'node:fs';
 import type { Config } from './config.ts';
+
+/** The shipped default, and the marker for "nobody has chosen". */
+export const DEFAULT_BIN = 'claude';
 
 /**
  * How to run Claude Code — as a command and its arguments, not as a name.
@@ -41,3 +45,129 @@ export function claudeInvocation(cfg: Config, args: string[]): { cmd: string; ar
  * not something this can get right.
  */
 export const WSL_LAUNCHER: string[] = ['wsl.exe', '--'];
+
+/**
+ * Where Claude Code is, worked out rather than assumed.
+ *
+ * `claudeBin: 'claude'` is a fine default on a system where it is on PATH and
+ * PATH means what POSIX says it means. Windows is not that system twice over:
+ * an executable is only found by trying the extensions in PATHEXT, and the one
+ * npm installs is a `.cmd` shim, which Node has refused to spawn directly since
+ * the argument-injection fix in 18.20 — it has to go through a command
+ * processor. And on a machine where Claude Code lives in WSL there is no
+ * `claude` on the Windows PATH at all, at any extension.
+ *
+ * So discovery answers with an invocation, not a path: the binary *and* the
+ * launcher needed to reach it. A configured `claudeBin` always wins, exactly as
+ * a configured plan wins over a detected one — see `plans/detect.ts`.
+ */
+export interface Discovery {
+  bin: string;
+  launcher: string[] | null;
+  /** How it was found, for the interface to say so rather than imply it. */
+  how: 'path' | 'path-shim' | 'wsl';
+}
+
+/** `.CMD;.BAT;.EXE…` — what Windows appends to a bare name when looking. */
+export function pathExtensions(env: NodeJS.ProcessEnv, platform: string): string[] {
+  if (platform !== 'win32') return [''];
+  const raw = env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD';
+  return ['', ...raw.split(';').map((e) => e.trim()).filter(Boolean)];
+}
+
+/**
+ * A shim has to be run by a command processor; a real executable does not.
+ *
+ * `cmd.exe /d /s /c` is the launcher rather than `shell: true`, because the
+ * arguments stay separate entries in an argv the way they do everywhere else.
+ * `shell: true` would flatten them into one string for Windows to re-split, and
+ * re-splitting a string somebody else composed is the whole class of bug.
+ */
+const SHIM = /\.(cmd|bat)$/i;
+
+export function invocationFor(file: string, platform: string): Discovery {
+  if (platform === 'win32' && SHIM.test(file)) {
+    return { bin: file, launcher: ['cmd.exe', '/d', '/s', '/c'], how: 'path-shim' };
+  }
+  return { bin: file, launcher: null, how: 'path' };
+}
+
+/**
+ * Walk PATH for the command, honouring PATHEXT.
+ *
+ * `exists` is injected so this can be tested against a filesystem that is not
+ * the one the test is running on — the whole point is behaviour on a platform
+ * the suite is not executing on.
+ */
+export function findOnPath(
+  name: string,
+  env: NodeJS.ProcessEnv,
+  platform: string,
+  exists: (p: string) => boolean,
+): string | null {
+  const sep = platform === 'win32' ? ';' : ':';
+  const dirs = (env.PATH ?? env.Path ?? '').split(sep).filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of pathExtensions(env, platform)) {
+      // Windows separators, on Windows. `join` from `node:path` would use the
+      // host's, and this has to reason about a platform it may not be on.
+      const slash = platform === 'win32' ? '\\' : '/';
+      const candidate = `${dir.replace(/[\\/]$/, '')}${slash}${name}${ext}`;
+      if (exists(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Find Claude Code, natively first and inside WSL only as a fallback.
+ *
+ * The order is not arbitrary. A native install is faster, sees the Windows
+ * filesystem the transcripts would also be read from, and needs no bridge; WSL
+ * is the answer only when there is nothing on this side to find. Someone who
+ * has both gets the native one, which is the same one their terminal gets.
+ *
+ * Returning `null` is a real answer and the caller must keep it: it means the
+ * gauges cannot be read at all, which is worth saying out loud rather than
+ * discovering through a spawn that fails every three minutes.
+ */
+export function discoverClaude(
+  env: NodeJS.ProcessEnv,
+  platform: string,
+  exists: (p: string) => boolean,
+): Discovery | null {
+  const native = findOnPath('claude', env, platform, exists);
+  if (native) return invocationFor(native, platform);
+
+  if (platform !== 'win32') return null;
+
+  // Only worth suggesting when WSL is actually installed. Whether Claude Code
+  // is inside it cannot be answered without running something, so this is a
+  // candidate rather than a finding — `available()` on the provider is where a
+  // wrong guess surfaces, and it surfaces as a reason rather than a crash.
+  const wsl = findOnPath('wsl', env, platform, exists);
+  if (wsl) return { bin: 'claude', launcher: WSL_LAUNCHER, how: 'wsl' };
+
+  return null;
+}
+
+/**
+ * The config, with discovery filled in where the user has not spoken.
+ *
+ * A configured `claudeBin` always wins — the same rule the plan follows, for
+ * the same reason: a value somebody set by hand is a decision, and a value we
+ * worked out is a guess, however good. Discovery only ever fills the default.
+ */
+export function resolveClaude(
+  cfg: Config,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: string = process.platform,
+  exists: (p: string) => boolean = (p) => existsSync(p),
+): { cfg: Config; how: Discovery['how'] | 'configured' | 'unknown' } {
+  const chosen = cfg.claudeBin !== DEFAULT_BIN || (cfg.claudeLauncher ?? []).length > 0;
+  if (chosen) return { cfg, how: 'configured' };
+
+  const found = discoverClaude(env, platform, exists);
+  if (!found) return { cfg, how: 'unknown' };
+  return { cfg: { ...cfg, claudeBin: found.bin, claudeLauncher: found.launcher }, how: found.how };
+}

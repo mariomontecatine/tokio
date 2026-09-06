@@ -107,19 +107,34 @@ and not a surprise.
 
 ---
 
-## Phase 1 — port the daemon to Windows `[next]`
+## Phase 1 — port the daemon to Windows `[doing]`
 
 Worth doing on its own, before any window exists. Concrete, located work:
 
-- **`[next]` Paths.** `src/config.ts:80-85` hardcodes XDG (`~/.config`,
-  `~/.local/share`). Windows wants `%APPDATA%` and `%LOCALAPPDATA%`. Keep the
-  XDG variables honoured where they are set — the test suite redirects
-  `XDG_CONFIG_HOME` and must keep working (`CLAUDE.md`, Testing).
-- **`[next]` Spawning the CLI.** `src/usage/probe.ts:139` and
-  `src/providers/claudeCode.ts:95` call `spawn(cfg.claudeBin, …)` with
-  `claudeBin: 'claude'`. On Windows that is `claude.cmd`, which `spawn` will not
-  find without PATHEXT resolution or `shell: true`. Prefer explicit resolution
-  over `shell: true` — a prompt reaches the shell otherwise.
+- **`[done]` Building.** `chmod` is not a command on Windows, so
+  `build:server` died before it produced anything. It goes through
+  `fs.chmodSync` now: a no-op there, and still what the shebang needs on Linux
+  and macOS.
+- **`[done]` Paths.** Windows gets the two directories it actually uses —
+  roaming for config, local for the database, which is the split those folders
+  exist to express. The XDG variables still win everywhere when set, and that is
+  load-bearing rather than tidy: the suite points `XDG_CONFIG_HOME` at a temp
+  directory so it does not edit the config of whoever runs it. macOS keeps the
+  XDG layout deliberately — moving it would strand the config and database of
+  everyone already running, for a directory nobody has complained about.
+- **`[done]` Finding the CLI.** `spawn('claude')` finds nothing on Windows: an
+  executable is only found by trying PATHEXT, and what npm installs is a `.cmd`
+  shim that Node has refused to spawn directly since the argument-injection fix
+  in 18.20. `discoverClaude` in `src/claudeCli.ts` walks PATH with PATHEXT,
+  hands a shim to `cmd.exe /d /s /c` as a launcher — arguments stay separate
+  argv entries, which `shell: true` would have flattened into one string for
+  Windows to re-split — and falls back to WSL only when nothing native is found.
+  A configured `claudeBin` always wins, the same rule the plan follows.
+  Not finding anything is a real answer and says so at startup rather than
+  failing a spawn every three minutes.
+  `[blocked]` **Verify a real spawn on Windows.** The construction is tested;
+  whether `cmd.exe /d /s /c <shim> -p /usage` actually returns the usage text
+  needs the platform.
 - **`[doing]` Where Claude Code lives.** Not a WSL question — a topology
   question, and WSL is one of three. All three are ordinary and all three have
   to work:

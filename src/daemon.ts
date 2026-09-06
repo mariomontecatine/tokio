@@ -12,6 +12,7 @@ import { notify } from './notify/index.ts';
 import { nextProbeDelay, probeUsage } from './usage/probe.ts';
 import { dashboardUrl, isLoopback, onWsl } from './net.ts';
 import { saveProbe, pruneProbes } from './usage/store.ts';
+import { resolveClaude } from './claudeCli.ts';
 
 export interface DaemonOptions {
   host?: string;
@@ -19,7 +20,18 @@ export interface DaemonOptions {
 }
 
 export async function startDaemon(options: DaemonOptions = {}) {
-  const cfg: Config = loadConfig();
+  // Discovery fills in where Claude Code is, unless the config already says.
+  // On Linux and macOS this almost always resolves to the same `claude` that
+  // was going to be spawned anyway; it earns its place on Windows, where a bare
+  // name finds nothing without PATHEXT and the npm shim cannot be spawned
+  // without a command processor in front of it.
+  const found = resolveClaude(loadConfig());
+  const cfg: Config = found.cfg;
+  if (found.how === 'unknown') {
+    console.error('tokio: warning — no Claude Code found on PATH' + (process.platform === 'win32' ? ' or in WSL' : '') + '. Set claudeBin in the config.');
+  } else if (found.how === 'wsl') {
+    console.log('tokio: using Claude Code inside WSL');
+  }
   if (options.host) cfg.host = options.host;
   if (options.port) cfg.port = options.port;
   // Listening beyond loopback needs a token. Refusing outright used to be the

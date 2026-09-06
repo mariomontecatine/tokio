@@ -84,12 +84,38 @@ const DEFAULTS: Config = {
   },
 };
 
+/**
+ * Where tokio keeps its config and its database.
+ *
+ * The XDG variables win everywhere when they are set, and that is load-bearing
+ * rather than tidy: `npm test` points `XDG_CONFIG_HOME` at a temp directory
+ * before anything imports this, because `PATCH /api/config` writes to the real
+ * path and the suite must not edit the config of whoever runs it. See
+ * `CLAUDE.md`.
+ *
+ * Unset, Windows gets the two directories Windows actually uses — roaming for
+ * config, local for the database, which is the split those two folders exist to
+ * express: settings that should follow you to another machine, and a cache of
+ * this machine's own work that should not. `~/.config` on Windows is a Unix
+ * habit in a place nothing else looks.
+ *
+ * macOS keeps the XDG layout rather than moving to `~/Library/Application
+ * Support`. It is the less conventional choice there and it is deliberate:
+ * changing it would strand the config and the database of everyone already
+ * running it, for a directory nobody has complained about.
+ */
+function baseDir(xdg: string | undefined, winVar: string | undefined, unixFallback: string[]): string {
+  if (xdg) return join(xdg, 'tokio');
+  if (process.platform === 'win32' && winVar) return join(winVar, 'tokio');
+  return join(homedir(), ...unixFallback, 'tokio');
+}
+
 export function configDir(): string {
-  return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'tokio');
+  return baseDir(process.env.XDG_CONFIG_HOME, process.env.APPDATA, ['.config']);
 }
 
 export function dataDir(): string {
-  return join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'tokio');
+  return baseDir(process.env.XDG_DATA_HOME, process.env.LOCALAPPDATA, ['.local', 'share']);
 }
 
 export function configPath(): string {
