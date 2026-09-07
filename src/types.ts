@@ -94,6 +94,22 @@ export interface Status {
    * 'estimated' is this machine's transcripts against a cap.
    */
   traceSource: 'reported' | 'estimated';
+  /**
+   * The same window rebuilt from this machine's transcripts, always.
+   *
+   * A reported trace begins at the first reading tokio took, because `/usage`
+   * cannot say what the window was at before it was asked — see `tracePaths` in
+   * `web/src/strip.ts`. On a daemon that has just started that leaves the strip
+   * with a single point and nothing to its left, which reads as broken rather
+   * than as honest.
+   *
+   * The transcripts do know: they were written before the daemon existed. This
+   * carries that shape so the interface can draw the unwatched stretch as
+   * something reconstructed, without touching `trace` or claiming a reading
+   * nobody took. Empty when there is nothing on disk for the window, and never
+   * a substitute for `trace` -- `traceSource` still describes that one.
+   */
+  traceLocal: TracePoint[];
   reservePct: number;
   block: WindowStatus;
   week: WindowStatus;

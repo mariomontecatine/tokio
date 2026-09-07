@@ -1206,3 +1206,20 @@ body:has([data-app="win32"]) {
   cursor: pointer;
 }
 .reach button.act:hover { border-color: var(--ink-faint); }
+
+/*
+ * The window before anyone was watching.
+ *
+ * Rebuilt from transcripts for the stretch a reported line cannot speak for.
+ * Dashed and unfilled, because it is a reconstruction standing where a
+ * measurement would go and the two must not read alike — the solid line and its
+ * area are what was actually reported. In the tone colour so it still belongs to
+ * the same chart, at an opacity that puts it behind rather than beside.
+ */
+.strip-before {
+  fill: none;
+  stroke: var(--tone);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 4;
+  opacity: 0.4;
+}

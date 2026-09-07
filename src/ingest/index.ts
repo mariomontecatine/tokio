@@ -55,6 +55,8 @@ export class Ingestor extends EventEmitter {
   private touched = new Set<string>();
   private sweepAll = true;
   private lastUsageAt = 0;
+  /** How long the last full pass took, so the sweep can pace itself. */
+  private lastSweepMs = 0;
   private stopped = false;
   private db: Db;
   private cfg: Config;
@@ -79,6 +81,7 @@ export class Ingestor extends EventEmitter {
   scan(only?: string[]): number {
     if (this.scanning) return 0;
     this.scanning = true;
+    const startedAt = Date.now();
     try {
       const files = only ?? claudeDirs(this.cfg).flatMap(discoverTranscripts);
       const readOffset = this.db.prepare('SELECT offset FROM files WHERE path = ?');
@@ -121,10 +124,14 @@ export class Ingestor extends EventEmitter {
           events.push({ ...parsed.event, turnId });
         }
         this.turns.set(file, turnId);
-        for (const t of turnRows) saveTurn.run(t.turnId, t.ts, t.project, t.chars);
-        if (events.length) {
+        // One transaction for the whole file, not one per row. These used to sit
+        // outside it, so a first scan of a long history was thousands of
+        // separate WAL commits -- the cheapest kind of slow, and invisible until
+        // someone watched a cold start.
+        if (turnRows.length || events.length) {
           this.db.exec('BEGIN');
           try {
+            for (const t of turnRows) saveTurn.run(t.turnId, t.ts, t.project, t.chars);
             for (const e of events) {
               const res = insert.run(
                 e.messageId, e.requestId, e.ts, e.model, e.family, e.inputTokens, e.outputTokens,
@@ -148,6 +155,9 @@ export class Ingestor extends EventEmitter {
       return inserted;
     } finally {
       this.scanning = false;
+      // Only a full pass measures the cost of a full pass; a targeted read of
+      // one file the watcher named says nothing about what a sweep will take.
+      if (!only) this.lastSweepMs = Date.now() - startedAt;
     }
   }
 
@@ -187,8 +197,23 @@ export class Ingestor extends EventEmitter {
     if (this.again) this.request();
   }
 
+  /**
+   * Never schedule a sweep sooner than the last one took to run.
+   *
+   * The busy interval assumes a sweep is nearly free, which it is on a local
+   * disk and is not across the WSL bridge: 9p charges a round trip per file, so
+   * a pass over a 975-file history costs about fourteen seconds whether or not
+   * anything changed. Asking for one every five was asking for three at once —
+   * the machine never stopped scanning, which is what the fan was reporting.
+   *
+   * Measuring instead of special-casing the platform: a fast filesystem keeps
+   * the fast beat because its sweeps really are fast, and a slow one spaces
+   * itself out by exactly as much as it costs. The doubling leaves the disk
+   * idle at least half the time rather than merely not overlapping.
+   */
   private sweepDelay(): number {
-    return Date.now() - this.lastUsageAt < BUSY_FOR_MS ? SWEEP_BUSY_MS : SWEEP_IDLE_MS;
+    const wanted = Date.now() - this.lastUsageAt < BUSY_FOR_MS ? SWEEP_BUSY_MS : SWEEP_IDLE_MS;
+    return Math.max(wanted, this.lastSweepMs * 2);
   }
 
   private sweep = (): void => {
@@ -200,37 +225,42 @@ export class Ingestor extends EventEmitter {
   };
 
   /**
-   * Watch the transcripts, and fall back to polling when watching them fails.
+   * Watch the transcripts where watching is possible, and let the sweep have
+   * the rest.
    *
    * Which filesystems support change notification is not something to guess at
-   * from a path. Transcripts inside WSL, read from Windows over `\\wsl.localhost`,
-   * are on 9p: `fs.watch` there does not merely miss events, it refuses outright
-   * with `EISDIR` and reports nothing ever again. Measured — native watching saw
-   * zero of two appends, polling saw both.
+   * from a path. Transcripts inside WSL, read from Windows over
+   * `\\wsl.localhost`, are on 9p: `fs.watch` there does not merely miss events,
+   * it refuses outright with `EISDIR` and reports nothing ever again. So the
+   * answer comes from behaviour rather than from a pattern — try the cheap way,
+   * and believe the filesystem when it says no.
    *
-   * So the answer comes from behaviour rather than from a pattern: try the cheap
-   * way, and when the filesystem says no, poll it instead. Once — a second
-   * failure is the sweep's problem, not a reason to keep reopening watchers.
+   * What it must *not* do is answer no with polling. That fallback was here and
+   * it cost more than the problem: chokidar's `usePolling` is `fs.watchFile` per
+   * file, so a 975-transcript history became 975 stats every 700ms, across the
+   * bridge, for as long as the application was open. Permanent load to avoid a
+   * delay the sweep already covers — and the sweep now paces itself, so on the
+   * filesystem that refuses to be watched it is both the cheaper answer and the
+   * only one that scales with the history.
    *
-   * chokidar reports this as an `error` *event*, which is why the `try/catch`
-   * that used to be here never saw it. An `error` event with no listener is
+   * The cost of that is latency, and it is worth naming: on a watched directory
+   * a new response shows up in a tenth of a second, on an unwatched one within a
+   * sweep. Nothing is missed either way.
+   *
+   * chokidar reports the refusal as an `error` *event*, which is why the
+   * `try/catch` around it never saw it. An `error` event with no listener is
    * rethrown by EventEmitter, so what actually happened on Windows was not a
    * degraded watcher: it was the daemon going down at startup.
    */
-  private async startWatching(dir: string, polling: boolean): Promise<void> {
+  private async startWatching(dir: string): Promise<void> {
     try {
       const { watch } = await import('chokidar');
-      const watcher = watch(dir, {
-        ignoreInitial: true,
-        depth: 2,
-        ...(polling ? { usePolling: true, interval: 700 } : {}),
-      });
+      const watcher = watch(dir, { ignoreInitial: true, depth: 2 });
       watcher.on('all', (_event: string, path?: string) => this.request(path));
       watcher.on('error', () => {
-        if (polling || this.stopped) return;
+        if (this.stopped) return;
         void watcher.close().catch(() => {});
         this.watchers = this.watchers.filter((w) => w !== (watcher as unknown));
-        void this.startWatching(dir, true);
       });
       this.watchers.push(watcher as unknown as { close(): Promise<void> });
     } catch {
@@ -249,7 +279,7 @@ export class Ingestor extends EventEmitter {
     // over — and a half-written last line is already handled by reading only as
     // far as the last newline.
     for (const dir of claudeDirs(this.cfg)) {
-      await this.startWatching(join(dir, 'projects'), false);
+      await this.startWatching(join(dir, 'projects'));
     }
     this.sweepTimer = setTimeout(this.sweep, this.sweepDelay());
     this.sweepTimer.unref();

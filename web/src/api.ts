@@ -13,6 +13,8 @@ export interface Status {
   planBasis: 'detected' | 'configured' | 'unknown';
   trace: TracePoint[];
   traceSource: 'reported' | 'estimated';
+  /** The same window rebuilt from transcripts, for the stretch `trace` cannot speak for. */
+  traceLocal: TracePoint[];
   reservePct: number;
   block: WindowStatus;
   week: WindowStatus;

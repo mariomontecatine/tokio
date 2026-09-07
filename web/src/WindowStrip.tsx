@@ -1,7 +1,7 @@
 import type { Status } from './api';
 import type { Translate } from './i18n';
 import { clock } from './format';
-import { projectionOf, tracePaths, xOf, yOf, type Box, type StripInput } from './strip';
+import { projectionOf, tracePaths, underlayPath, xOf, yOf, type Box, type StripInput } from './strip';
 
 // A viewBox close to the box it actually renders in, so it can scale uniformly.
 // Stretching it with preserveAspectRatio="none" would squash the clock labels
@@ -37,7 +37,7 @@ interface Props {
  * on a scale it could not be read at.
  */
 export function WindowStrip({ status, t }: Props) {
-  const { block, trace, traceSource, now, burnRate } = status;
+  const { block, trace, traceSource, traceLocal, now, burnRate } = status;
   const start = block.window.start;
   const end = block.window.end;
   const hours = Math.round((end - start) / HOUR);
@@ -52,6 +52,7 @@ export function WindowStrip({ status, t }: Props) {
   const input: StripInput = {
     trace,
     traceSource,
+    traceLocal,
     start,
     end,
     now,
@@ -61,6 +62,7 @@ export function WindowStrip({ status, t }: Props) {
   };
 
   const { line, area } = tracePaths(input, BOX);
+  const underlay = underlayPath(input, BOX);
   const projection = projectionOf(input, BOX);
   const nowX = xOf(now, input, BOX);
 
@@ -83,6 +85,9 @@ export function WindowStrip({ status, t }: Props) {
         ))}
         <line className="strip-base" x1={X0} x2={X1} y1={Y_BOTTOM} y2={Y_BOTTOM} />
 
+        {/* Under the reported line, never over it: what was reconstructed must
+            not sit on top of what was measured. */}
+        {underlay && <path className="strip-before" d={underlay} />}
         <path className="strip-area" d={area} />
         <path className="strip-line" d={line} />
 

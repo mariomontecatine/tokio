@@ -85,9 +85,6 @@ export async function startDaemon(options: DaemonOptions = {}) {
   });
   scheduler.on('change', () => bus.emit('change'));
 
-  await ingestor.start();
-  scheduler.start();
-
   /**
    * The last percentage we were told, so that work done off this machine still
    * counts as work.
@@ -134,27 +131,55 @@ export async function startDaemon(options: DaemonOptions = {}) {
     poller.unref();
   };
 
-  const first = await refresh();
-  if (first.error) console.error(`tokio: warning — ${first.error}`);
-  pollAgain(first);
-
-  // A reset is the one moment queued work becomes runnable, so it starts the
-  // job, reads the real numbers again and says so — rather than waiting for
-  // whichever timer happened to be next.
-  watchForReset(db, cfg, bus, () => {
-    void scheduler.tick();
-    void refresh().then(pollAgain);
-  });
-
+  /*
+   * Listen first, then fill up.
+   *
+   * The window has nothing to load until this server answers — the dashboard is
+   * served by the daemon — so every second spent before `listen` is a second of
+   * blank screen. It used to be a lot of them: the first scan reads every byte
+   * of every transcript, and where those live across the WSL bridge that is
+   * 27.5s of synchronous reads on Electron's main thread, followed by a
+   * `claude -p "/usage"` that is allowed thirty. An application that takes the
+   * best part of a minute to draw anything reads as broken, and it was ours.
+   *
+   * None of that work is needed to answer a request. The database is open, the
+   * routes are pure functions over it, and the dashboard already refreshes
+   * itself from the event stream — so the ingest and the first probe run behind
+   * the window and their results arrive as changes, which is what the stream is
+   * for.
+   */
   const app = await createServer({ db, cfg, scheduler, onChange, refresh, claudeHow: found.how });
   await app.listen({ host: cfg.host, port: cfg.port });
 
   const url = dashboardUrl(cfg);
-  const status = computeStatus(db, cfg);
   console.log(`tokio listening on ${url}`);
   for (const hint of accessHints(cfg)) console.log(hint);
-  console.log(`  5h window: ${status.block.usedPct.toFixed(0)}% used (${status.block.source}), resets ${new Date(status.block.resetsAt).toLocaleTimeString()}`);
-  console.log(`  queue: ${status.queued} job(s)`);
+
+  const warmUp = (async () => {
+    await ingestor.start();
+    scheduler.start();
+
+    const first = await refresh();
+    if (first.error) console.error(`tokio: warning — ${first.error}`);
+    pollAgain(first);
+
+    // A reset is the one moment queued work becomes runnable, so it starts the
+    // job, reads the real numbers again and says so — rather than waiting for
+    // whichever timer happened to be next.
+    watchForReset(db, cfg, bus, () => {
+      void scheduler.tick();
+      void refresh().then(pollAgain);
+    });
+
+    // Printed here rather than beside the listening line: before the first
+    // probe the only honest figure is none, and a 0% that turns into 54% two
+    // seconds later is worse than a line that arrives late.
+    const status = computeStatus(db, cfg);
+    console.log(`  5h window: ${status.block.usedPct.toFixed(0)}% used (${status.block.source}), resets ${new Date(status.block.resetsAt).toLocaleTimeString()}`);
+    console.log(`  queue: ${status.queued} job(s)`);
+  })();
+  // Surfaced rather than swallowed: this is where the daemon's real work is now.
+  void warmUp.catch((err) => console.error(`tokio: warning — start-up: ${err?.message ?? err}`));
 
   const shutdown = async () => {
     if (poller) clearTimeout(poller);
@@ -166,7 +191,10 @@ export async function startDaemon(options: DaemonOptions = {}) {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  return { app, db, cfg, ingestor, scheduler, url };
+  // `warmUp` is handed back so a caller that needs the daemon *finished* rather
+  // than merely answering — a test, a script — can await it. Nothing in the
+  // application does: the window wants the server, not the scan.
+  return { app, db, cfg, ingestor, scheduler, url, warmUp };
 }
 
 /**

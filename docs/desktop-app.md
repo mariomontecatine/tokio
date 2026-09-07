@@ -219,9 +219,42 @@ Worth doing on its own, before any window exists. Concrete, located work:
     says so at startup when it sees a UNC transcript path, because the cost is
     invisible and the fix is not "wait".
 
-  `[open]` Whether the sweep should back off on a remote path, or use directory
-  mtimes to avoid stat-ing every file. Neither is worth doing before someone
-  actually runs the bridge in anger — the sweep is correct today, only costly.
+  `[done]` **The sweep paces itself, and nothing polls files any more.** Someone
+  ran the bridge in anger: the first launch of the installed application took
+  the best part of a minute, span the fan up and made the whole machine sluggish.
+  Three causes, all ours, all measured.
+
+  **The window waited for the whole daemon.** `startDaemon` scanned every
+  transcript and probed `/usage` *before* the server listened, and the dashboard
+  is served by that server — so the window had nothing to load. Across the
+  bridge that is 27.5s of synchronous reads on Electron's main thread plus a
+  probe allowed thirty seconds. It listens first now and warms up behind the
+  window; the ingest and the probe arrive as changes on the stream, which is
+  what the stream is for. **Measured on an empty database: 50s → 3.5s.**
+
+  **The busy sweep asked for a pass every five seconds and each pass cost
+  fourteen**, so for the first two minutes they ran back to back — that was the
+  fan. `sweepDelay` now takes the greater of the interval it wants and twice
+  what the last full pass actually took. Measured rather than special-cased by
+  platform: a local disk keeps the fast beat because its sweeps really are fast.
+
+  **And the polling fallback cost more than the problem.** chokidar's
+  `usePolling` is `fs.watchFile` per file, so a 975-transcript history became 975
+  stats every 700ms, across the bridge, permanently — not a first-run cost at
+  all. It is gone: where `fs.watch` is refused, the sweep is the mechanism, and
+  it now scales with the history instead of fighting it. The price is latency,
+  which is worth naming — a watched directory notices a response in a tenth of
+  a second, an unwatched one within a sweep. Nothing is missed either way.
+  **Idle daemon after: 0% CPU, 10 MB.**
+
+  Also folded in: turn rows and session costs join the per-file transaction they
+  used to sit outside, which on a first scan was thousands of separate WAL
+  commits.
+
+  **Not all of it was ours.** Windows Defender scanning a new, unsigned 233 MB
+  executable on first execution is why the *machine* was slow rather than just
+  the application — real-time protection on, no exclusion. That is an argument
+  for phase 5 rather than a code change.
 
   `[done]` **Two installations at once — read both.** Someone with Claude Code
   natively on Windows *and* inside WSL has two sets of transcripts and one
@@ -425,6 +458,24 @@ back dark to all four edges, so the band is outside the web contents entirely.
 `hasShadow: false` and `transparent: true` were both tried, neither touched it,
 and neither was left in the code — a workaround that does not work is worse than
 the artefact. Windows draws this frame through DWM and does not have it.
+
+`[done]` **The strip no longer reads as broken on a fresh daemon.** A reported
+line starts at the first reading and says nothing to its left — deliberately,
+because `/usage` cannot say what the window was at before it was asked. With a
+daemon that started seconds ago that leaves one point and an empty field, which
+is honest and looks like a fault.
+
+The transcripts do know that stretch: they were written before the daemon
+existed. `computeStatus` now always sends `traceLocal` beside `trace`, and the
+strip draws the unwatched span from it, dashed and behind — a reconstruction
+standing where a measurement would go, and not mistakable for one. `trace` and
+`traceSource` are untouched.
+
+Deliberately **not** scaled to meet the reported line. The local shape counts
+what this machine did; the reading counts the account. Where they fail to meet,
+that gap is work done somewhere leaving no transcript here — a browser, another
+computer — which is the thing the reach panel exists to explain, and stretching
+one to touch the other would erase it.
 
 `[done]` **Light theme from the system.** The application could not reach it at
 all: `nativeTheme.themeSource` was pinned to `'dark'`, which forces

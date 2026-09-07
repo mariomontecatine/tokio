@@ -17,6 +17,8 @@ export interface StripInput {
   trace: TracePoint[];
   /** Where the trace came from. It decides what the chart may claim about time it did not see. */
   traceSource: 'reported' | 'estimated';
+  /** The same window rebuilt from transcripts, for the stretch `trace` cannot speak for. */
+  traceLocal?: TracePoint[];
   start: number;
   end: number;
   now: number;
@@ -97,6 +99,53 @@ export function tracePaths(input: StripInput, box: Box): { line: string; area: s
   const line = steps.join(' ');
   const openedAt = fromFloor ? box.x0 : x(first!.t);
   return { line, area: `${line} L ${nowX} ${box.yBottom} L ${openedAt} ${box.yBottom} Z` };
+}
+
+/**
+ * The stretch of the window that ran before anyone was watching.
+ *
+ * A reported line starts at the first reading and says nothing to its left,
+ * which is correct and looks like a fault: open the application four hours into
+ * a window and the chart is a dot on an empty field. The transcripts were being
+ * written the whole time though, so that stretch is not unknown — it is just
+ * known from somewhere else, and this draws it from there.
+ *
+ * Deliberately not scaled to meet the reported line. The local shape counts what
+ * this machine did; the reported reading counts the account. Where they fail to
+ * meet, the gap is the work done somewhere with no transcript here — a browser,
+ * another computer — which is a fact worth seeing, and stretching one to touch
+ * the other would erase it. Drawn dashed for the same reason: it is a
+ * reconstruction standing in for a measurement, and it should not be possible to
+ * mistake the two.
+ *
+ * Returns null when there is nothing honest to draw: an estimated trace already
+ * covers the window, the reported line starts at the edge anyway, or the
+ * transcripts hold nothing for that stretch.
+ */
+export function underlayPath(input: StripInput, box: Box): string | null {
+  if (input.traceSource !== 'reported') return null;
+
+  const first = input.trace[0];
+  if (first === undefined) return null;
+
+  const local = (input.traceLocal ?? []).filter((p) => p.t <= first.t);
+  if (!local.length) return null;
+
+  const x = (ts: number) => xOf(ts, input, box).toFixed(1);
+  const y = (percent: number) => yOf(percent, box).toFixed(1);
+
+  // From the floor at the window's edge: unlike `/usage`, transcripts genuinely
+  // know the window opened empty, because every response this machine made is
+  // in them.
+  const steps = [`M ${box.x0} ${box.yBottom}`];
+  let last = 0;
+  for (const point of local) {
+    steps.push(`L ${x(point.t)} ${y(last)}`);
+    steps.push(`L ${x(point.t)} ${y(point.pct)}`);
+    last = point.pct;
+  }
+  steps.push(`L ${x(first.t)} ${y(last)}`);
+  return steps.join(' ');
 }
 
 export interface Projection {

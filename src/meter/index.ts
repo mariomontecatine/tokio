@@ -311,9 +311,10 @@ export function computeStatus(db: Db, cfg: Config, now = Date.now()): Status {
   // was estimating, and the chart drew one story under the other.
   const reads = session?.sessionResetsAt ? sessionReadsIn(db, session.sessionResetsAt, RESET_JUMP_MS) : [];
   const traceSource: 'reported' | 'estimated' = session ? 'reported' : 'estimated';
+  const local = blockTrace(events, block.start, block.end, blockCapInfo.credits);
   const trace = session
     ? reportedTrace(reads, block.start, now, blockStatus.usedPct)
-    : blockTrace(events, block.start, block.end, blockCapInfo.credits);
+    : local;
 
   let exhaustionAt: number | null = null;
   if (burnRate > 0 && blockStatus.remainingCredits > 0) {
@@ -339,6 +340,10 @@ export function computeStatus(db: Db, cfg: Config, now = Date.now()): Status {
     planBasis: plan.basis,
     trace,
     traceSource,
+    // Sent whichever source won, but only ever *read* by the strip when the
+    // reported line starts late. When the trace is already the local one this
+    // is the same series, and the interface has nothing to underlay.
+    traceLocal: local,
     reservePct: cfg.reservePct,
     block: blockStatus,
     week: toStatus(

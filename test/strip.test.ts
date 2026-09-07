@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { projectionOf, tracePaths, xOf, yOf, type Box, type StripInput } from '../web/src/strip.ts';
+import { projectionOf, tracePaths, underlayPath, xOf, yOf, type Box, type StripInput } from '../web/src/strip.ts';
 
 const BOX: Box = { x0: 8, x1: 592, yTop: 16, yBottom: 124 };
 const HOUR = 3_600_000;
@@ -83,4 +83,56 @@ test('a projection that runs out early stops at the cap, and says so', () => {
 
 test('a window of zero length collapses to the left edge instead of dividing by it', () => {
   assert.equal(xOf(5, input({ start: 7, end: 7 }), BOX), BOX.x0);
+});
+
+// ---------- the stretch that ran before anyone was watching ----------
+
+test('a reported line that starts late is underlaid from the transcripts', () => {
+  // Open the application four hours into a window and the reported line begins
+  // at the first reading, leaving an empty field to its left. The transcripts
+  // were written the whole time, so that stretch is known — from elsewhere.
+  const d = underlayPath(input({
+    trace: [{ t: 4 * HOUR, pct: 40 }],
+    traceLocal: [{ t: HOUR, pct: 10 }, { t: 2 * HOUR, pct: 25 }],
+  }), BOX);
+  assert.ok(d, 'expected an underlay');
+  const points = coords(d!);
+  // Starts on the floor at the window's edge: unlike /usage, transcripts do
+  // know the window opened empty.
+  assert.deepEqual(points[0], [BOX.x0, BOX.yBottom]);
+  assert.ok(points.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)));
+  assert.ok(points.every(([x]) => x <= xOf(4 * HOUR, input(), BOX) + 0.05), 'never past the first reading');
+});
+
+test('the underlay is not stretched to meet the reported line', () => {
+  // Where the local shape stops short, the gap is work done with no transcript
+  // here — a browser, another machine. Scaling one to touch the other would
+  // erase exactly that.
+  const d = underlayPath(input({
+    trace: [{ t: 4 * HOUR, pct: 90 }],
+    traceLocal: [{ t: 2 * HOUR, pct: 10 }],
+  }), BOX)!;
+  const heights = coords(d).map(([, y]) => y);
+  assert.ok(!heights.includes(yOf(90, BOX)), 'the underlay must not reach the reported level');
+  assert.ok(heights.includes(yOf(10, BOX)), 'it stops at what the transcripts actually say');
+});
+
+test('nothing is underlaid when there is nothing honest to draw', () => {
+  // An estimated trace already covers the window from the floor.
+  assert.equal(underlayPath(input({ traceSource: 'estimated', trace: [{ t: HOUR, pct: 5 }], traceLocal: [{ t: HOUR, pct: 5 }] }), BOX), null);
+  // No transcripts for the stretch.
+  assert.equal(underlayPath(input({ trace: [{ t: 4 * HOUR, pct: 40 }], traceLocal: [] }), BOX), null);
+  // No reported reading at all: `tracePaths` already draws from the floor.
+  assert.equal(underlayPath(input({ trace: [], traceLocal: [{ t: HOUR, pct: 5 }] }), BOX), null);
+  // Local points that all fall after the first reading say nothing about before it.
+  assert.equal(underlayPath(input({ trace: [{ t: HOUR, pct: 40 }], traceLocal: [{ t: 3 * HOUR, pct: 50 }] }), BOX), null);
+});
+
+test('the reported line itself is untouched by the underlay', () => {
+  // The whole point: what was measured keeps its own shape, and the
+  // reconstruction goes behind it.
+  const withLocal = input({ trace: [{ t: 4 * HOUR, pct: 40 }], traceLocal: [{ t: HOUR, pct: 10 }] });
+  const without = input({ trace: [{ t: 4 * HOUR, pct: 40 }] });
+  assert.equal(tracePaths(withLocal, BOX).line, tracePaths(without, BOX).line);
+  assert.equal(tracePaths(withLocal, BOX).area, tracePaths(without, BOX).area);
 });
