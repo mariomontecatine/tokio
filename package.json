@@ -4,6 +4,7 @@
   "description": "Queue prompts for your LLM coding agents and watch your subscription quota. Jobs run themselves when your limit resets.",
   "type": "module",
   "license": "GPL-3.0-or-later",
+  "author": "mariomontecatine",
   "bin": {
     "tokio": "dist/cli.js"
   },
@@ -24,7 +25,9 @@
     "test": "node --no-warnings --experimental-strip-types --test test/*.test.ts",
     "start": "node dist/cli.js start",
     "prepare": "npm run build",
-    "app": "npm run build && cd desktop && npm start"
+    "app": "npm run build && electron desktop",
+    "pack": "npm run build && electron-builder --dir",
+    "dist:app": "npm run build && electron-builder"
   },
   "dependencies": {
     "@fastify/static": "^8.0.0",
@@ -36,6 +39,8 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.7.0",

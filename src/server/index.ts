@@ -6,8 +6,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Db } from '../db.ts';
 import type { Config } from '../config.ts';
-import { loadConfig, saveConfig, claudeDir, redactConfig } from '../config.ts';
+import { loadConfig, saveConfig, claudeDir, claudeDirs, redactConfig } from '../config.ts';
 import { computeStatus } from '../meter/index.ts';
+import { computeReach, type Reach } from '../reach.ts';
 import { computeValue } from '../meter/value.ts';
 import { predict } from '../estimator/predict.ts';
 import { accuracy } from '../estimator/learn.ts';
@@ -118,6 +119,8 @@ export interface ServerDeps {
   db: Db;
   cfg: Config;
   scheduler: Scheduler;
+  /** How Claude Code was found, so the interface can say what it can see. */
+  claudeHow?: Reach['claude']['how'];
   onChange: (listener: () => void) => () => void;
   /** Re-reads the real percentages from Claude Code. */
   refresh?: () => Promise<{ error: string | null }>;
@@ -316,6 +319,11 @@ export async function createServer(deps: ServerDeps) {
     }
   });
 
+  // What this installation can and cannot see. Static for the life of the
+  // daemon apart from the transcript count, so it is its own route rather than
+  // weight on `/api/status`, which is polled.
+  app.get('/api/reach', async () => computeReach(cfg, deps.claudeHow ?? 'unknown'));
+
   app.get('/api/config', async () => redactConfig(cfg));
 
   app.patch('/api/config', async (req, reply) => {
@@ -343,8 +351,19 @@ export async function createServer(deps: ServerDeps) {
     return { ok: true };
   });
 
-  app.get('/api/projects', async () => knownProjects(db, claudeDir(cfg)));
-  app.get('/api/sessions', async (req) => recentSessions(claudeDir(cfg), String((req.query as any)?.cwd ?? '')));
+  // Both installations' projects, for the same reason both are metered: a
+  // picker that offered only half of them would send work to the wrong list.
+  app.get('/api/projects', async () => {
+    const seen = new Set<string>();
+    return claudeDirs(cfg).flatMap((dir) => knownProjects(db, dir))
+      .filter((p) => !seen.has(p.path) && seen.add(p.path));
+  });
+  app.get('/api/sessions', async (req) => {
+    const cwd = String((req.query as any)?.cwd ?? '');
+    return claudeDirs(cfg).flatMap((dir) => recentSessions(dir, cwd))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 15);
+  });
 
   app.get('/api/history', async () => {
     const rows = db

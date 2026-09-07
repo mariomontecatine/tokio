@@ -148,8 +148,15 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface Reach {
+  claude: { how: string; bin: string | null; launched: boolean };
+  transcripts: { dir: string; exists: boolean; projects: number; remote: boolean }[];
+  plan: { id: string | null; basis: 'detected' | 'configured' | 'unknown' };
+}
+
 export const api = {
   status: () => request<Status>('/api/status'),
+  reach: () => request<Reach>('/api/reach'),
   jobs: () => request<Job[]>('/api/jobs'),
   projects: () => request<Project[]>('/api/projects'),
   sessions: (cwd: string) => request<Session[]>(`/api/sessions?cwd=${encodeURIComponent(cwd)}`),

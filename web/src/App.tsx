@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Reach } from './Reach';
 import { api, useDashboard, type PeriodName, type Status, type ValueReport } from './api';
 import { Ring } from './Ring';
 import { readVerdict, turnCount } from './verdict';
@@ -242,6 +243,20 @@ export default function App() {
   const { status, jobs, live, error, refresh } = useDashboard();
   const { lang, setLang, t } = useLang();
   const [showDetails, setShowDetails] = useState(false);
+  // Said once, on the first run, then folded into Details. A limitation worth
+  // stating is not worth repeating every morning, and localStorage is the right
+  // weight for it: losing the flag shows the panel again, which is harmless.
+  const [introduced, setIntroduced] = useState(() => {
+    try {
+      return localStorage.getItem('tokio.reachSeen') === '1';
+    } catch {
+      return true;
+    }
+  });
+  const dismissReach = () => {
+    try { localStorage.setItem('tokio.reachSeen', '1'); } catch { /* private mode */ }
+    setIntroduced(true);
+  };
 
   // Inertial wheel scrolling. Set up once, and it undoes itself completely on
   // the way out — see smoothScroll.ts for what it deliberately leaves alone.
@@ -342,7 +357,10 @@ export default function App() {
         {verdict.detail && <span className="quiet"> {verdict.detail}</span>}
       </p>
 
+      {!introduced && <Reach t={t} onDismiss={dismissReach} />}
+
       <Expand open={showDetails}>
+        {introduced && <Reach t={t} />}
         <Details status={status} t={t} lang={lang} onRefresh={refresh} />
       </Expand>
 

@@ -146,7 +146,7 @@ export async function startDaemon(options: DaemonOptions = {}) {
     void refresh().then(pollAgain);
   });
 
-  const app = await createServer({ db, cfg, scheduler, onChange, refresh });
+  const app = await createServer({ db, cfg, scheduler, onChange, refresh, claudeHow: found.how });
   await app.listen({ host: cfg.host, port: cfg.port });
 
   const url = dashboardUrl(cfg);

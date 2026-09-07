@@ -3,7 +3,7 @@ import { basename, dirname } from 'node:path';
 import { join } from 'node:path';
 import type { Db } from '../db.ts';
 import type { Config } from '../config.ts';
-import { claudeDir } from '../config.ts';
+import { claudeDirs } from '../config.ts';
 import { discoverTranscripts, unslugProject } from './discover.ts';
 import { tailFile } from './tail.ts';
 import { parseEntry } from './parse.ts';
@@ -47,7 +47,7 @@ const BUSY_FOR_MS = 2 * 60_000;
 export class Ingestor extends EventEmitter {
   private sweepTimer: NodeJS.Timeout | null = null;
   private settleTimer: NodeJS.Timeout | null = null;
-  private watcher: { close(): Promise<void> } | null = null;
+  private watchers: { close(): Promise<void> }[] = [];
   private scanning = false;
   /** A change arrived mid-scan; whatever it was, it has not been read yet. */
   private again = false;
@@ -80,7 +80,7 @@ export class Ingestor extends EventEmitter {
     if (this.scanning) return 0;
     this.scanning = true;
     try {
-      const files = only ?? discoverTranscripts(claudeDir(this.cfg));
+      const files = only ?? claudeDirs(this.cfg).flatMap(discoverTranscripts);
       const readOffset = this.db.prepare('SELECT offset FROM files WHERE path = ?');
       const saveOffset = this.db.prepare(
         `INSERT INTO files (path, offset, size, seenAt) VALUES (?,?,?,?)
@@ -229,10 +229,10 @@ export class Ingestor extends EventEmitter {
       watcher.on('error', () => {
         if (polling || this.stopped) return;
         void watcher.close().catch(() => {});
-        this.watcher = null;
+        this.watchers = this.watchers.filter((w) => w !== (watcher as unknown));
         void this.startWatching(dir, true);
       });
-      this.watcher = watcher as unknown as { close(): Promise<void> };
+      this.watchers.push(watcher as unknown as { close(): Promise<void> });
     } catch {
       // chokidar is optional; the sweep is enough on its own.
     }
@@ -248,7 +248,9 @@ export class Ingestor extends EventEmitter {
     // the writing to stop would hold every update back until the answer was
     // over — and a half-written last line is already handled by reading only as
     // far as the last newline.
-    await this.startWatching(join(claudeDir(this.cfg), 'projects'), false);
+    for (const dir of claudeDirs(this.cfg)) {
+      await this.startWatching(join(dir, 'projects'), false);
+    }
     this.sweepTimer = setTimeout(this.sweep, this.sweepDelay());
     this.sweepTimer.unref();
   }
@@ -259,7 +261,7 @@ export class Ingestor extends EventEmitter {
     if (this.settleTimer) clearTimeout(this.settleTimer);
     this.sweepTimer = null;
     this.settleTimer = null;
-    await this.watcher?.close();
-    this.watcher = null;
+    await Promise.all(this.watchers.map((w) => w.close().catch(() => {})));
+    this.watchers = [];
   }
 }

@@ -1,0 +1,189 @@
+<!doctype html>
+<!--
+  The one screen that is not the dashboard.
+
+  It exists for a state that is ordinary on the machines tokio is built for and
+  unrecoverable without help: the port this machine's daemon wants is answered
+  by a tokio running inside WSL, because WSL forwards localhost, and its access
+  token lives in its own config over there. The window cannot read that token
+  and cannot bind the port either.
+
+  A modal error box was the first answer and was the wrong shape: an application
+  that opens with a dialog quoting an environment variable and then quits is
+  talking to whoever built it. This says the same thing in the interface, keeps
+  the window, and offers the two things that actually resolve it.
+
+  Deliberately standalone -- its own markup and its own colours rather than the
+  dashboard's stylesheet. That stylesheet is served by the daemon, and the whole
+  reason this screen is up is that no daemon can be reached.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tokio — setup</title>
+<style>
+  :root {
+    --ground: #0b0d10; --surface: #14171c; --hairline: #222731;
+    --ink: #eceff3; --ink-dim: #8a93a1; --ink-faint: #5c6675;
+    --tight: #f5b93b; --ease: #2fd98a;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, monospace;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground: #edf0f4; --surface: #f7f8fa; --hairline: #d5dae2;
+      --ink: #11151c; --ink-dim: #565f6d; --ink-faint: #79818f;
+      --tight: #8a5a00; --ease: #097a4a;
+      color-scheme: light;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 14px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* The masthead is the title bar, exactly as it is on the dashboard, or a
+     frameless window has nothing to be dragged by. */
+  header {
+    display: flex; align-items: center; gap: 10px; padding: 18px 22px;
+    -webkit-app-region: drag; user-select: none;
+  }
+  .wordmark { font-size: 15px; font-weight: 600; }
+  .where { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+  .spacer { flex: 1; }
+  .winctl {
+    -webkit-app-region: no-drag; width: 40px; height: 26px; border: 0;
+    background: none; color: var(--ink-dim); cursor: pointer; font-size: 15px;
+    line-height: 1; border-radius: 5px;
+  }
+  .winctl:hover { background: var(--surface); color: var(--ink); }
+  .winctl.close:hover { background: #c42b1c; color: #fff; }
+
+  main { padding: 6px 34px 34px; max-width: 620px; }
+  h1 { font-size: 19px; font-weight: 600; margin: 8px 0 14px; letter-spacing: -0.01em; }
+  p { margin: 0 0 13px; color: var(--ink-dim); }
+  p.lead { color: var(--ink); }
+  code { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
+
+  label { display: block; margin: 22px 0 7px; font-size: 12px;
+          text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink-faint);
+          font-family: var(--mono); }
+  input {
+    width: 100%; padding: 10px 12px; border-radius: 8px; font-family: var(--mono);
+    font-size: 12.5px; border: 1px solid var(--hairline);
+    background: var(--surface); color: var(--ink);
+  }
+  input:focus { outline: 2px solid var(--ease); outline-offset: 1px; }
+
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 16px; }
+  button.act {
+    padding: 9px 16px; border-radius: 8px; border: 1px solid var(--hairline);
+    background: var(--surface); color: var(--ink); font-size: 13px; cursor: pointer;
+  }
+  button.act:hover { border-color: var(--ink-faint); }
+  button.act.primary { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+  button.act[disabled] { opacity: 0.4; cursor: default; }
+
+  .note { margin-top: 4px; font-size: 12.5px; min-height: 20px; }
+  .note.bad { color: var(--tight); }
+  .note.good { color: var(--ease); }
+  hr { border: 0; border-top: 1px solid var(--hairline); margin: 26px 0 6px; }
+  .quiet { font-size: 12.5px; color: var(--ink-faint); }
+</style>
+</head>
+<body>
+  <header>
+    <span class="wordmark">tokio</span>
+    <span class="where" id="where"></span>
+    <span class="spacer"></span>
+    <button class="winctl" id="min" title="Minimise">&#8211;</button>
+    <button class="winctl close" id="close" title="Close">&#10005;</button>
+  </header>
+
+  <main>
+    <h1>Another tokio is already on this port</h1>
+
+    <p class="lead">
+      Port <code id="port">4646</code> is answered by a tokio this app cannot
+      authenticate with, so it has nothing to show yet.
+    </p>
+    <p>
+      On Windows this is almost always tokio running inside WSL. WSL forwards
+      localhost, so a daemon over there answers here as though it were local —
+      but its access token stays in its own config, where this window cannot
+      read it.
+    </p>
+    <p>
+      That daemon has your real history in it. Point this window at it and
+      everything works; there is nothing to move or copy.
+    </p>
+
+    <label for="url">The address that daemon printed when it started</label>
+    <input id="url" type="text" spellcheck="false"
+           placeholder="http://172.20.0.1:4646/?token=…" autocomplete="off">
+    <div class="note quiet" id="note">
+      Run <code>tokio</code> inside WSL and it prints this line.
+    </div>
+
+    <div class="row">
+      <button class="act primary" id="connect">Connect</button>
+      <button class="act" id="retry">Check again</button>
+    </div>
+
+    <hr>
+    <p class="quiet">
+      Prefer to keep them separate? Change <code>port</code> in this machine's
+      tokio config and reopen — this window will start a daemon of its own.
+    </p>
+  </main>
+
+<script>
+  const bridge = window.tokioDesktop;
+  const $ = (id) => document.getElementById(id);
+  const note = $('note');
+
+  $('min').onclick = () => bridge.minimize();
+  $('close').onclick = () => bridge.close();
+
+  const params = new URLSearchParams(location.search);
+  const port = params.get('port') || '4646';
+  $('port').textContent = port;
+  $('where').textContent = 'setup';
+  $('url').placeholder = `http://<address>:${port}/?token=…`;
+
+  function say(text, kind) {
+    note.textContent = text;
+    note.className = 'note' + (kind ? ' ' + kind : ' quiet');
+  }
+
+  async function attempt(fn, working) {
+    const buttons = [$('connect'), $('retry')];
+    buttons.forEach((b) => (b.disabled = true));
+    say(working);
+    try {
+      const result = await fn();
+      // On success the main process swaps this window for the dashboard, so
+      // there is nothing to do here but stop and let it.
+      if (!result.ok) say(result.reason, 'bad');
+    } catch (err) {
+      say(String(err && err.message ? err.message : err), 'bad');
+    } finally {
+      buttons.forEach((b) => (b.disabled = false));
+    }
+  }
+
+  $('connect').onclick = () => {
+    const url = $('url').value.trim();
+    if (!url) return say('Paste the address first.', 'bad');
+    attempt(() => bridge.setupConnect(url), 'Trying that address…');
+  };
+
+  $('retry').onclick = () => attempt(() => bridge.setupRetry(), 'Looking again…');
+
+  $('url').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('connect').click(); });
+  $('url').focus();
+</script>
+</body>
+</html>

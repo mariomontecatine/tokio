@@ -30,23 +30,91 @@ const GROUND = '#0b0d10';
 const GROUND_LIGHT = '#edf0f4';
 
 /**
- * Attach to a daemon that is already running, rather than fighting it for the
- * port.
+ * Who, if anyone, is on the port — and whether we can actually talk to them.
  *
- * Someone who has been using `tokio start` has one up with the real database
- * open. Starting a second against the same file would be two writers and two
- * pollers, so the application defers to it and just shows it.
+ * Someone using `tokio start` has a daemon up with the real database open, and
+ * starting a second against the same file would be two writers and two pollers.
+ * So the application defers to it. But "something replied" is not the same as
+ * "something we can use", and the difference is not hypothetical on the machines
+ * this is built for: **WSL forwards localhost**. A Windows tokio probing
+ * 127.0.0.1 finds the daemon running *inside WSL*, attaches to it, and then
+ * authenticates with the Windows config's token — which belongs to a different
+ * daemon. Every call comes back 401 and the dashboard reports that the daemon is
+ * not answering, which is a true sentence about the wrong thing.
+ *
+ * Testing `res.ok` was wrong for the opposite reason and is what this replaces:
+ * it read the 401 from a token-protected daemon as an empty port and started a
+ * second straight into EADDRINUSE. Sending the token separates the two cases
+ * the single boolean could not.
+ *
+ * @returns 'free' — nothing there, start our own.
+ *          'ours' — a daemon that accepts our token, or needs none.
+ *          'foreign' — a daemon that refuses it. Not ours to use, and not a
+ *          port we could bind either.
  */
-async function findRunningDaemon(port) {
+async function probeDaemon(port, token) {
   try {
-    await fetch(`http://127.0.0.1:${port}/api/status`, { signal: AbortSignal.timeout(1200) });
-    // Any reply at all means a daemon holds the port — including a 401, which
-    // is what a daemon bound past loopback answers without a token. Testing
-    // `res.ok` read that refusal as an empty port, and the application then
-    // started a second daemon straight into an EADDRINUSE.
-    return true;
+    const res = await fetch(`http://127.0.0.1:${port}/api/status`, {
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+      signal: AbortSignal.timeout(1200),
+    });
+    return res.status === 401 ? 'foreign' : 'ours';
   } catch {
-    return false;
+    return 'free';
+  }
+}
+
+/**
+ * An address the user gave the setup screen, remembered for next time.
+ *
+ * Kept in the application's own userData rather than in the daemon's config:
+ * this is a fact about which daemon *this window* watches, not a setting of any
+ * daemon. `TOKIO_URL` still wins over it, so a one-off run can point somewhere
+ * else without disturbing what was saved.
+ */
+const remoteFile = () => path.join(app.getPath('userData'), 'remote.json');
+
+function readRemote() {
+  try {
+    const url = JSON.parse(fs.readFileSync(remoteFile(), 'utf8')).url;
+    return typeof url === 'string' && url ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRemote(url) {
+  fs.mkdirSync(path.dirname(remoteFile()), { recursive: true });
+  fs.writeFileSync(remoteFile(), JSON.stringify({ url }, null, 2));
+}
+
+/**
+ * Does this address actually answer, with the token it carries?
+ *
+ * Checked before it is saved. Saving first and discovering on the next launch
+ * that it was a typo would leave the application broken in a way that looks
+ * like the fault it was meant to fix.
+ */
+async function checkRemote(raw) {
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, reason: 'That is not a URL. It should start with http://' };
+  }
+  const { url, token } = splitToken(raw);
+  try {
+    const res = await fetch(new URL('/api/status', url), {
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+      signal: AbortSignal.timeout(4000),
+    });
+    if (res.status === 401) {
+      return { ok: false, reason: 'That daemon answered but refused the token in the address.' };
+    }
+    if (!res.ok) return { ok: false, reason: `That daemon answered with ${res.status}.` };
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: `Nothing answered at ${parsed.host}. Is that daemon still running?` };
   }
 }
 
@@ -89,20 +157,25 @@ async function resolveUrl() {
   // point at that daemon over the network and be the real thing, rather than an
   // empty shell reporting that it cannot find anything.
   if (process.env.TOKIO_URL) {
-    return { ...splitToken(process.env.TOKIO_URL), own: false, remote: true };
+    return { ...splitToken(process.env.TOKIO_URL), source: 'env' };
   }
+
+  const saved = readRemote();
+  if (saved) return { ...splitToken(saved), source: 'saved' };
 
   const { loadConfig } = await import(`${DIST}/config.js`);
   const cfg = loadConfig();
   const at = (port) => `http://127.0.0.1:${port}/`;
 
-  if (await findRunningDaemon(cfg.port)) {
-    return { url: at(cfg.port), token: cfg.token ?? null, own: false };
+  const held = await probeDaemon(cfg.port, cfg.token);
+  if (held === 'foreign') return { foreign: true, port: cfg.port };
+  if (held === 'ours') {
+    return { url: at(cfg.port), token: cfg.token ?? null, source: 'attached' };
   }
 
   const { startDaemon } = await import(`${DIST}/daemon.js`);
   const daemon = await startDaemon({ host: '127.0.0.1' });
-  return { url: at(daemon.cfg.port), token: daemon.cfg.token ?? null, own: true };
+  return { url: at(daemon.cfg.port), token: daemon.cfg.token ?? null, source: 'own' };
 }
 
 /**
@@ -204,7 +277,10 @@ function setAutostart(on) {
   }
 }
 
-function buildTray(url) {
+// The tray outlives whatever the window is currently showing, so it reaches
+// for `currentUrl` rather than closing over the address it was built with:
+// built while setup was up, a captured one would reopen setup forever.
+function buildTray() {
   const icon = nativeImage.createFromPath(
     path.join(__dirname, 'assets', process.platform === 'darwin' ? 'trayTemplate.png' : 'tray.png'),
   );
@@ -217,7 +293,7 @@ function buildTray(url) {
 
   const rebuild = () => {
     const menu = Menu.buildFromTemplate([
-      { label: 'Open tokio', click: () => showWindow(url) },
+      { label: 'Open tokio', click: () => currentUrl && showWindow(currentUrl) },
       { type: 'separator' },
       {
         label: 'Start with the computer',
@@ -237,7 +313,7 @@ function buildTray(url) {
 
   // Left-clicking a tray icon opens the thing on Windows; macOS expects the
   // menu, which the framework already shows.
-  tray.on('click', () => showWindow(url));
+  tray.on('click', () => currentUrl && showWindow(currentUrl));
 }
 
 /**
@@ -377,28 +453,100 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => { quitting = true; });
 
-  app.whenReady().then(async () => {
-    const { url, token, own, remote } = await resolveUrl();
+  /**
+   * Work out what to show, and show it. Called again when setup resolves the
+   * thing that was in the way, so the application arrives at the dashboard
+   * without being restarted.
+   */
+  async function boot() {
+    const resolved = await resolveUrl();
+
+    // Before the branch, so setup has one too: with the window-all-closed
+    // handler above keeping the process alive, a setup screen without a tray
+    // would be an application running with no way back to it.
+    if (!tray) buildTray();
+
+    // A window opening onto a dashboard that can never load is worse than no
+    // window: it reports a fault in the daemon, and the fault is here. The
+    // setup screen says so in the interface and offers the way out.
+    if (resolved.foreign) {
+      console.error(`tokio: port ${resolved.port} is held by a daemon that refuses this token`);
+      showSetup(resolved.port);
+      return;
+    }
+
+    const { url, token, source } = resolved;
     // The URL no longer carries the token, but it is still printed without a
     // query string: an application's stdout is the one place nobody thinks to
     // check before pasting it into a bug report, and that should stay true of
     // whatever anyone puts in `TOKIO_URL` next.
+    //
+    // Four sources, four sentences. One line covering the environment variable
+    // and the address saved in setup said `(TOKIO_URL)` for both, which sent
+    // anyone debugging the second to look at a variable that was never set.
     const shown = url.split('?')[0];
-    console.log(
-      remote ? `tokio: showing the daemon at ${shown} (TOKIO_URL)`
-        : own ? `tokio: started its own daemon at ${shown}`
-        : `tokio: attached to the daemon already running at ${shown}`,
-    );
+    console.log({
+      env: `tokio: showing the daemon at ${shown} (TOKIO_URL)`,
+      saved: `tokio: showing the daemon at ${shown} (saved in setup)`,
+      attached: `tokio: attached to the daemon already running at ${shown}`,
+      own: `tokio: started its own daemon at ${shown}`,
+    }[source]);
 
     currentToken = token;
     currentUrl = url;
-    buildTray(url);
     showWindow(url);
+  }
 
-    app.on('activate', () => showWindow(url));
+  /** The setup screen is the same frameless window, pointed at a local file. */
+  function showSetup(port) {
+    const file = pathToFileURL(path.join(__dirname, 'setup.html')).href;
+    currentUrl = `${file}?port=${port}`;
+    currentToken = null;
+    showWindow(currentUrl);
+  }
+
+  // Setup hands back a reason rather than throwing: the screen shows it, and an
+  // address that does not work is an ordinary answer, not an exception.
+  ipcMain.handle('setup:connect', async (_e, raw) => {
+    const check = await checkRemote(String(raw ?? '').trim());
+    if (!check.ok) return check;
+    writeRemote(String(raw).trim());
+    replaceWindowWith(boot);
+    return { ok: true };
   });
 
-  // Deliberately no `window-all-closed` handler that quits. The tray is the
-  // application now, on every platform, for the reason above the `close`
-  // handler: closing the window must not stop the daemon.
+  ipcMain.handle('setup:retry', async () => {
+    const { loadConfig } = await import(`${DIST}/config.js`);
+    const cfg = loadConfig();
+    if (await probeDaemon(cfg.port, cfg.token) === 'foreign') {
+      return { ok: false, reason: 'Still the same daemon on that port.' };
+    }
+    replaceWindowWith(boot);
+    return { ok: true };
+  });
+
+  /**
+   * Drop the setup window before rebuilding, so `showWindow` makes a new one
+   * rather than reusing a window still showing setup.html.
+   */
+  function replaceWindowWith(next) {
+    const old = windowRef;
+    windowRef = null;
+    if (old && !old.isDestroyed()) old.destroy();
+    void next();
+  }
+
+  app.whenReady().then(async () => {
+    await boot();
+    app.on('activate', () => currentUrl && showWindow(currentUrl));
+  });
+
+  // Observed and ignored, which is not the same as absent.
+  //
+  // Electron quits on this event when *nothing* listens, so leaving it
+  // unhandled is a handler that quits — the opposite of what the tray is for.
+  // It went unnoticed because closing the window hides it rather than destroying
+  // it, so the event never fired; the setup screen swapping itself for the
+  // dashboard destroys one, and the application died mid-transition.
+  app.on('window-all-closed', () => {});
 }

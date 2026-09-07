@@ -1,0 +1,70 @@
+# Packaging tokio as an installable application.
+#
+# The app directory is the repository root, not `desktop/`. The window is a
+# shell around the daemon — `desktop/main.js` imports `startDaemon` from
+# `dist/` and runs it in the main process — so the thing being packaged is the
+# whole project, and rooting the build here means `dist/` and the production
+# dependencies are already where the code expects them. electron-builder keeps
+# `dependencies` and drops `devDependencies` on its own, which is why fastify,
+# chokidar and @fastify/static come along and vite and typescript do not.
+
+appId: io.github.mariomontecatine.tokio
+productName: tokio
+copyright: Copyright (C) 2026 Mario Montecatine
+
+directories:
+  output: release
+  buildResources: desktop/assets
+
+# The published npm package has no `main` and should not grow one: it is a CLI,
+# and `files` there does not include `desktop/`, so the field would dangle for
+# anyone who installed it. This injects the entry point into the packaged
+# application's copy of package.json and nowhere else.
+extraMetadata:
+  main: desktop/main.js
+  # `app.getName()` reads this, and it is what names the userData directory.
+  # Left alone it is the npm package's name, so an application called tokio kept
+  # its config under `tokio-queue`. Worth settling before anyone has data in it.
+  name: tokio
+
+files:
+  - dist/**/*
+  - desktop/main.js
+  - desktop/preload.js
+  - desktop/setup.html
+  - desktop/assets/**/*
+  # Load-bearing, and not obviously so: the root package.json declares
+  # `"type": "module"`, and Node decides a file's module system from the
+  # *nearest* package.json. Without this one — which declares no type, so
+  # CommonJS — `desktop/main.js` would be loaded as ESM inside the asar and die
+  # on its first `require`.
+  - desktop/package.json
+  - package.json
+  - '!**/*.map'
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: desktop/assets/icon.png
+
+nsis:
+  # An installer that asks is the one people trust. A one-click that drops the
+  # app somewhere and launches it, unsigned, reads exactly like the thing
+  # SmartScreen is warning about.
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: tokio
+
+linux:
+  target: [AppImage]
+  category: Development
+  icon: desktop/assets/icon.png
+
+mac:
+  target: [dmg]
+  category: public.app-category.developer-tools
+  icon: desktop/assets/icon.png

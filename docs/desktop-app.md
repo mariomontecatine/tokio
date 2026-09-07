@@ -223,10 +223,26 @@ Worth doing on its own, before any window exists. Concrete, located work:
   mtimes to avoid stat-ing every file. Neither is worth doing before someone
   actually runs the bridge in anger — the sweep is correct today, only costly.
 
-  `[open]` **Two installations at once.** Someone with Claude Code both natively
-  on Windows and inside WSL has two sets of transcripts and one account. Read
-  both and merge, or ask which? Nobody has decided, and the honest failure —
-  counting one machine's work twice — is the kind this project cares about.
+  `[done]` **Two installations at once — read both.** Someone with Claude Code
+  natively on Windows *and* inside WSL has two sets of transcripts and one
+  account, and discovery can only point at one, because the binary is in one
+  place. The feared failure was counting a machine's work twice. The actual one
+  was the opposite, and worse: not counting it at all.
+
+  Measured here mid-session: Anthropic reporting **39% of the window used**
+  against **$0 of priced work**, because the session being typed into was the
+  Windows one while tokio read WSL. The verdict line said "Nothing running" to
+  someone who was running something. After merging — 72 events in the window, a
+  real burn rate, `$61.85` in the window, and `$106` of that week's spend that
+  had simply been missing.
+
+  `claudeDirs` returns every directory worth reading rather than one. Merging is
+  safe rather than merely convenient: events are keyed on
+  `(messageId, requestId)` and inserted with `INSERT OR IGNORE`, so the same
+  transcript reachable two ways cannot be counted twice — the failure this had
+  to avoid. `CLAUDE_CONFIG_DIR` stays exclusive, because it is Claude Code's own
+  variable and means "my configuration is here"; reading elsewhere as well would
+  override something set on purpose.
 
   `TOKIO_URL` remains a way to *try* the application across the boundary, not
   the answer to any of the above.
@@ -444,11 +460,87 @@ The bar the user named is Claude Desktop for Windows. Treat it as the reference.
 
 ---
 
-## Phase 4 — installing without a terminal `[next]`
+## Phase 4 — installing without a terminal `[doing]`
 
-Installer, first-run, auto-update (`electron-updater`). First run should detect
-the plan, find Claude Code, and say in plain language what tokio can and cannot
-see — which after today's metering work it can state truthfully.
+`[done]` **There is an installer.** `npm run dist:app` produces a 111 MB NSIS
+installer; `npm run pack` produces the unpacked application without one. Built,
+installed and run on Windows 11: it lands in `%LOCALAPPDATA%\Programs\tokio`,
+registers an uninstaller, and the dashboard renders real figures out of the
+asar.
+
+The app directory is the **repository root**, not `desktop/`. The window is a
+shell around a daemon it imports from `dist/`, so the thing being packaged is
+the whole project; rooting the build here puts `dist/` and the production
+dependencies where the code already expects them, and electron-builder drops
+`devDependencies` by itself. Three things fell out of that and are load-bearing:
+
+- Electron moved to the root `devDependencies`. It was only in `desktop/`, where
+  the builder could not see it — and keeping a copy in both would have been two
+  version specs to drift apart, plus 380 MB of duplicate.
+- `extraMetadata` injects `main` and `name` into the packaged package.json only.
+  `main` would dangle in the published npm package, which is a CLI and does not
+  ship `desktop/`. `name` is what `app.getName()` reads, so without it an
+  application called tokio kept its config under `tokio-queue`.
+- `desktop/package.json` must stay in `files`. The root declares
+  `"type": "module"` and Node takes a file's module system from the *nearest*
+  package.json; without that one, `desktop/main.js` loads as ESM inside the asar
+  and dies on its first `require`.
+
+`[done]` **First run, for the state that actually happens here.** Installing and
+running it as a user would found the application broken out of the box — and it
+is the failure this audience hits, not an edge case. **WSL forwards localhost**,
+so a Windows tokio probing 127.0.0.1 finds the daemon running *inside WSL*,
+attaches to it, and authenticates with the Windows config's token, which belongs
+to a different daemon. Every call is 401 and the dashboard says the daemon is
+not answering — a true sentence about the wrong thing.
+
+`probeDaemon` now sends the token and distinguishes three answers: free, ours,
+and a daemon that refuses us. The last one opens `desktop/setup.html` instead of
+a dashboard that can never load. It explains what was found, takes the address
+that daemon printed, checks it before saving it, and swaps itself for the
+dashboard without a restart. The address lives in the application's own
+userData, because it is a fact about which daemon this window watches rather
+than a setting of any daemon, and `TOKIO_URL` still wins over it.
+
+A modal error box was the first answer and was the wrong shape: an application
+that opens with a dialog quoting an environment variable and then quits is
+talking to whoever built it.
+
+Two faults surfaced only by building the real thing:
+
+- **`window-all-closed` was unhandled, and unhandled means quit.** The comment
+  said there was deliberately no handler *that quits* — but Electron's default
+  when nothing listens is exactly that. It never fired because closing the
+  window hides it; the setup screen destroys one, and the application died
+  mid-transition. It is observed and ignored now.
+- The startup line said `(TOKIO_URL)` for an address that came from setup,
+  sending anyone debugging it to a variable that was never set. Four sources,
+  four sentences.
+
+`[next]` **Auto-update.** `electron-updater` is not wired. The build already
+emits `latest.yml` and a blockmap, so the manifest side is there; what is
+missing is a `publish` target and a release to point at. Not worth writing
+blind — it cannot be verified until there is something to update *from*.
+
+`[done]` **Say what tokio can and cannot see.** `GET /api/reach` answers with
+facts rather than a verdict — where Claude Code was found, every transcript
+directory being read and whether each crosses a filesystem boundary, and the
+plan with its basis. The panel says it on first run and then folds into
+Details: a limitation worth stating is not worth repeating every morning.
+
+Two things it is careful about. The rings and the priced figures do not have the
+same reach, and it says so: the rings come from Anthropic and cover the account
+— every device, the browser included — while anything carrying a price is
+rebuilt from transcripts, which only exist where the work was done. And a plan
+nobody established is reported as unknown, not as the `'pro'` that `resolvePlan`
+still answers with so the gauges have something to divide by.
+
+Building it is what surfaced the two-installation fault in phase 1: the panel
+claimed to read "this machine" while naming one of two directories.
+
+`[open]` **The installer overwrites a Start Menu shortcut of the same name.**
+Harmless here — it replaced a hand-made development launcher — but worth knowing
+that `tokio.lnk` is not a name the installer owns exclusively.
 
 ---
 
@@ -471,7 +563,7 @@ three separate places, and each costs a browser-only user something different:
 
 | What | Source | Browser-only user |
 |---|---|---|
-| Gauges (%, reset) | `claude -p "/usage"` | Needs the CLI installed and signed in |
+| Gauges (%) | `claude -p "/usage"`, **or** the desktop app's own `plan-usage-history.json` | Readable without the CLI, if they have the desktop app — see below |
 | Payback, heatmap, burn rate, headroom | transcripts in `~/.claude/projects` | **Impossible** — they do not exist |
 | Plan detection | `~/.claude.json` | Needs the CLI |
 | The queue | spawns `claude -p` in a repo | Meaningless — no repo, no terminal |
@@ -504,9 +596,42 @@ installed and authenticated.
 easy way to the gauges and it would burn the only thing this project sells,
 which is that the numbers can be trusted. Terms of service aside, do not.
 
-`[open]` **Does the Claude desktop app leave anything readable on disk?**
-Unknown, and worth half an hour before anyone designs for option 1 or 2 — if the
-answer is yes, the whole picture for non-CLI users improves. Nobody has looked.
+`[done]` **Does the Claude desktop app leave anything readable on disk? Yes —
+the percentages, with history.** Somebody looked. On Windows the desktop
+application keeps `%APPDATA%\Claude\plan-usage-history.json`:
+
+```json
+{ "version": 2, "samples": [ { "t": 1788720253163, "org": "…", "u": { "fh": 43, "sd": 21 } } ] }
+```
+
+`fh` is the five-hour window and `sd` the seven-day one, both as whole
+percentages. Verified rather than inferred: the 20:44 sample read `sd=21` while
+`claude -p "/usage"` eleven minutes later reported the week at **21%**, and
+`fh=43` against a session at **45%** and climbing. Sampled every 15 minutes;
+35 samples covering about a day.
+
+**This moves the non-CLI picture, but only the top row of the table.** The
+gauges are readable from a file the application writes itself — no CLI, no
+scraping, nothing anyone would have to be talked into. It is *better* than the
+probe in one way, since `/usage` answers with a point and this is a trace. The
+money is untouched: percentages carry no tokens and no prices, so payback, the
+heatmap and burn rate still need transcripts and still cannot exist for someone
+who never works locally.
+
+Three things to weigh before building on it:
+
+- It is undocumented and internal. `version: 2` is proof the shape has already
+  changed once, so anything reading it must treat a surprise as "no data"
+  rather than as an error, and must never let it override a reported reading.
+- Samples carry an `org`, so an account in more than one organisation needs
+  filtering rather than the last row.
+- It only advances while the desktop application is running, and at a fifteen
+  minute grain. That is a different promise from a live probe and should not be
+  presented as the same thing.
+
+`[open]` **Whether to read it.** The finding does not decide the question above;
+it changes what option 2 costs. A gauges-only tier no longer requires installing
+a CLI for anyone who already has the desktop app.
 
 ---
 

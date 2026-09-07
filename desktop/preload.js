@@ -45,6 +45,10 @@ contextBridge.exposeInMainWorld('tokioDesktop', {
   // Preferred over the copy in storage because storage can be refused, and a
   // window told the token directly should not depend on anything else.
   token,
+  // Only the setup screen calls these. They are on the same bridge because a
+  // second one would be a second thing to audit for the sake of two methods.
+  setupConnect: (url) => ipcRenderer.invoke('setup:connect', url),
+  setupRetry: () => ipcRenderer.invoke('setup:retry'),
   minimize: () => ipcRenderer.send('window:minimize'),
   toggleMaximize: () => ipcRenderer.send('window:toggle-maximize'),
   close: () => ipcRenderer.send('window:close'),

@@ -126,6 +126,36 @@ export function claudeDir(cfg: Config): string {
   return cfg.claudeConfigDir || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 }
 
+/**
+ * Every transcript directory worth reading, which is not always one.
+ *
+ * A machine can have Claude Code installed twice, and on Windows that is the
+ * ordinary case rather than the exotic one: the CLI inside WSL and the desktop
+ * application natively, each writing its own transcripts under its own home.
+ * Discovery picks a single directory — it has to, since the binary lives in one
+ * place — and reading only that one silently drops the other install's spend.
+ * Measured on the machine this was written on: 29% of the window reported by
+ * Anthropic against `$0` of priced work, because the session being worked in
+ * was the one not being read.
+ *
+ * Merging is safe rather than merely convenient. Events are keyed on
+ * `(messageId, requestId)` and inserted with `INSERT OR IGNORE`, so the same
+ * transcript reachable through two paths cannot be counted twice — which is the
+ * failure this had to avoid.
+ *
+ * `CLAUDE_CONFIG_DIR` is exclusive. It is Claude Code's own variable and it
+ * means "my configuration is here"; quietly reading somewhere else as well
+ * would override a statement someone made on purpose.
+ */
+export function claudeDirs(cfg: Config): string[] {
+  if (process.env.CLAUDE_CONFIG_DIR) return [process.env.CLAUDE_CONFIG_DIR];
+
+  const primary = claudeDir(cfg);
+  const home = join(homedir(), '.claude');
+  if (primary === home || !existsSync(join(home, 'projects'))) return [primary];
+  return [primary, home];
+}
+
 export function loadConfig(): Config {
   const path = configPath();
   if (!existsSync(path)) return { ...DEFAULTS };

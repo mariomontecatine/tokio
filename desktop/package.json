@@ -2,12 +2,6 @@
   "name": "tokio-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "The tokio dashboard as a desktop application.",
-  "main": "main.js",
-  "scripts": {
-    "start": "electron ."
-  },
-  "devDependencies": {
-    "electron": "^44.0.0"
-  }
+  "description": "The tokio dashboard as a desktop application. Run it with `npm run app` from the repository root.",
+  "main": "main.js"
 }

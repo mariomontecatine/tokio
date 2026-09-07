@@ -1157,3 +1157,52 @@ html:has([data-app="win32"]) {
 body:has([data-app="win32"]) {
   background: transparent;
 }
+
+/*
+ * What these numbers can see.
+ *
+ * Set in the interface's own voice rather than as a warning: none of this is a
+ * fault, it is the shape of what can be known. So no icon, no colour from the
+ * three that mean pressure — those say whether you make it to the reset, and
+ * spending one here would make a statement of scope look like an alarm.
+ */
+.reach {
+  margin: 26px 0 4px;
+  padding: 18px 20px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.reach h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.reach ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.reach li {
+  color: var(--ink-dim);
+  font-size: 13px;
+  line-height: 1.55;
+  /* The path and the count are the two things a reader checks against reality,
+     so they are the two that get the machine face. */
+  overflow-wrap: anywhere;
+}
+.reach button.act {
+  margin-top: 14px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.reach button.act:hover { border-color: var(--ink-faint); }
