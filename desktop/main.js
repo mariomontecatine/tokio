@@ -1,18 +1,28 @@
 /**
  * tokio, as an application.
  *
- * The daemon is not reimplemented here and not talked to over a socket from a
- * second process: `startDaemon` is imported and run inside this one. That is the
- * whole reason this is Electron rather than Tauri — the metering, the ingest and
- * the queue are Node, and under Electron they run unchanged. See
- * `docs/desktop-app.md`.
+ * The daemon is not reimplemented here: `startDaemon` is the same code `tokio
+ * start` runs. That is the whole reason this is Electron rather than Tauri — the
+ * metering, the ingest and the queue are Node, and under Electron they run
+ * unchanged. See `docs/desktop-app.md`.
+ *
+ * It does not run on this process's thread, though. It did at first, and this
+ * thread is also where Windows delivers every click the application gets: the
+ * tray, the window's own buttons, dragging it, a second launch asking to see
+ * it. A sweep of the transcripts across the WSL bridge held it for twelve to
+ * fifteen seconds at a time, so the window stopped answering — 0 responses in 17
+ * samples over 40 seconds, measured — and closing it took as long as the sweep
+ * had left. `daemon-host.js` runs it in a utility process instead: the same
+ * executable and the same Node, nothing extra to install, and a thread of its
+ * own. This one is left with nothing to do but the window.
  *
  * The window is frameless on purpose. A dashboard in a default OS title bar
  * reads as a web page someone put in a box; the chrome is drawn by the app, and
  * the dashboard's own masthead is the drag region, so there is no second bar
  * stacked above the first.
  */
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, screen, shell, nativeTheme, utilityProcess } = require('electron');
+const { trayAction } = require('./window-state.js');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -173,9 +183,42 @@ async function resolveUrl() {
     return { url: at(cfg.port), token: cfg.token ?? null, source: 'attached' };
   }
 
-  const { startDaemon } = await import(`${DIST}/daemon.js`);
-  const daemon = await startDaemon({ host: '127.0.0.1' });
-  return { url: at(daemon.cfg.port), token: daemon.cfg.token ?? null, source: 'own' };
+  const daemon = await startDaemonProcess();
+  return { url: at(daemon.port), token: daemon.token, source: 'own' };
+}
+
+/**
+ * The daemon, started in its own process; resolves once it is listening.
+ *
+ * Started again if it dies, because the tray promises it is still running
+ * whether or not the window is open — and in a process of its own it can die
+ * without taking the window with it, which is new. The pause doubles on each
+ * failure, so a daemon that cannot start at all (a port somebody else took, a
+ * database it cannot open) does not spin; reaching `listening` resets it.
+ */
+let daemonProcess = null;
+
+function startDaemonProcess() {
+  return new Promise((resolve) => {
+    let failures = 0;
+    const spawn = () => {
+      const child = utilityProcess.fork(path.join(__dirname, 'daemon-host.js'), [], { serviceName: 'tokio daemon' });
+      daemonProcess = child;
+      child.on('message', (msg) => {
+        if (msg?.type !== 'listening') return;
+        failures = 0;
+        resolve({ port: msg.port, token: msg.token });
+      });
+      child.on('exit', (code) => {
+        if (daemonProcess === child) daemonProcess = null;
+        if (quitting) return;
+        const wait = Math.min(60_000, 1000 * 2 ** failures++);
+        console.error(`tokio: the daemon exited (${code}); starting it again in ${wait / 1000}s`);
+        setTimeout(spawn, wait);
+      });
+    };
+    spawn();
+  });
 }
 
 /**
@@ -199,11 +242,59 @@ function showWindow(url) {
   if (windowRef && !windowRef.isDestroyed()) {
     if (windowRef.isMinimized()) windowRef.restore();
     windowRef.show();
-    windowRef.focus();
+    raise(windowRef);
     return windowRef;
   }
   windowRef = createWindow(url);
   return windowRef;
+}
+
+/**
+ * In front, not merely focused.
+ *
+ * Windows lets only the foreground process hand out focus, so `focus()` from
+ * here can be refused — the taskbar button flashes and nothing else happens.
+ * And a window that is open but covered does nothing at all on `show()`. The
+ * click on the icon changed nothing anyone could see. Pinning the window on top
+ * and letting go of it again leaves it at the top of the ordinary windows
+ * whether or not focus was granted, which is what the click asked for.
+ */
+function raise(win) {
+  if (process.platform === 'win32') {
+    win.setAlwaysOnTop(true);
+    win.setAlwaysOnTop(false);
+  }
+  win.focus();
+}
+
+/**
+ * A request to see the window that came before there was anything to show —
+ * the tray is up from the first moment, the daemon a few seconds later. It is
+ * remembered and honoured by `boot`, rather than dropped.
+ */
+let showWhenReady = false;
+
+function requestShow() {
+  if (currentUrl) showWindow(currentUrl);
+  else showWhenReady = true;
+}
+
+/** When the window last lost focus. See `trayAction`, in window-state.js. */
+let lastBlurAt = 0;
+
+/** The tray icon is a switch: it puts away the window that is in front and brings back one that is not. */
+function toggleWindow() {
+  const win = windowRef && !windowRef.isDestroyed() ? windowRef : null;
+  const action = win
+    ? trayAction({
+        visible: win.isVisible(),
+        minimized: win.isMinimized(),
+        focused: win.isFocused(),
+        msSinceBlur: Date.now() - lastBlurAt,
+      })
+    : 'show';
+  if (action === 'hide') win.hide();
+  else requestShow();
 }
 
 /**
@@ -218,6 +309,19 @@ const AUTOSTART = path.join(os.homedir(), '.config', 'autostart', 'tokio.desktop
 const isLinux = process.platform === 'linux';
 
 /**
+ * Started with the computer, tokio belongs in the tray, not in front of
+ * whatever the user logged in to do.
+ *
+ * `openAsHidden` was meant to say that, and it is macOS's alone: on Windows the
+ * login item launched the application exactly as a double-click would, window
+ * and all. So the login item carries an argument, and startup reads it. On
+ * Windows the argument is also part of how the entry is recognised — asking
+ * `getLoginItemSettings` without it reports an entry that has one as absent.
+ */
+const LOGIN_ARGS = ['--hidden'];
+const startHidden = process.argv.includes('--hidden');
+
+/**
  * `Exec` is a command line, so anything with a space in it has to be quoted —
  * and a path is exactly the kind of thing that has one. The desktop entry
  * specification wants backslashes and double quotes escaped inside the quotes.
@@ -228,9 +332,9 @@ function desktopEntry() {
   // Packaged, the executable is the application. Unpackaged, it is Electron and
   // the application is an argument to it, which is what makes this work in
   // development instead of autostarting a bare Electron with no app in it.
-  const exec = app.isPackaged
+  const exec = (app.isPackaged
     ? quote(process.execPath)
-    : `${quote(process.execPath)} ${quote(app.getAppPath())}`;
+    : `${quote(process.execPath)} ${quote(app.getAppPath())}`) + ` ${LOGIN_ARGS.join(' ')}`;
   return [
     '[Desktop Entry]',
     'Type=Application',
@@ -248,7 +352,7 @@ function desktopEntry() {
 // can delete from outside the application, and a checkbox that reported what we
 // last did rather than what is true would be wrong the first time they did.
 const opensAtLogin = () => {
-  if (!isLinux) return app.getLoginItemSettings().openAtLogin;
+  if (!isLinux) return app.getLoginItemSettings({ args: LOGIN_ARGS }).openAtLogin;
   try {
     return fs.existsSync(AUTOSTART);
   } catch {
@@ -258,7 +362,7 @@ const opensAtLogin = () => {
 
 function setAutostart(on) {
   if (!isLinux) {
-    app.setLoginItemSettings({ openAtLogin: on, openAsHidden: true });
+    app.setLoginItemSettings({ openAtLogin: on, openAsHidden: true, args: LOGIN_ARGS });
     return;
   }
   try {
@@ -293,7 +397,7 @@ function buildTray() {
 
   const rebuild = () => {
     const menu = Menu.buildFromTemplate([
-      { label: 'Open tokio', click: () => currentUrl && showWindow(currentUrl) },
+      { label: 'Open tokio', click: requestShow },
       { type: 'separator' },
       {
         label: 'Start with the computer',
@@ -311,9 +415,10 @@ function buildTray() {
   };
   rebuild();
 
-  // Left-clicking a tray icon opens the thing on Windows; macOS expects the
-  // menu, which the framework already shows.
-  tray.on('click', () => currentUrl && showWindow(currentUrl));
+  // Left-clicking a tray icon opens the thing on Windows — and clicking it again
+  // puts it away, which it never did: the handler only ever showed. macOS
+  // expects the menu, which the framework already shows.
+  tray.on('click', toggleWindow);
 }
 
 /**
@@ -392,7 +497,14 @@ function createWindow(url) {
 
   // Painting only once the page is ready is the difference between an
   // application and a page load: no empty frame, no flash of the wrong colour.
-  win.once('ready-to-show', () => win.show());
+  // Raised as well as shown: a window created because of a click on the tray or
+  // a second launch belongs to a process that is not in the foreground, and
+  // Windows would otherwise open it behind whatever is.
+  win.once('ready-to-show', () => {
+    win.show();
+    raise(win);
+  });
+  win.on('blur', () => { lastBlurAt = Date.now(); });
 
   win.on('close', (e) => {
     if (quitting) return;
@@ -441,9 +553,22 @@ if (!app.requestSingleInstanceLock()) {
   // hidden window is still in `getAllWindows()` and is not `isMinimized()`, so
   // this focused something invisible and the launch did nothing at all -- the
   // exact state the tray is designed to leave behind.
-  app.on('second-instance', () => {
-    if (currentUrl) showWindow(currentUrl);
+  //
+  // Before the daemon is up there is no URL yet, and this used to do nothing —
+  // so the second click on an icon that seemed to have done nothing did nothing
+  // too. It is remembered now. A second launch from the login item, which
+  // should not happen but costs nothing to respect, stays in the tray.
+  app.on('second-instance', (_e, argv) => {
+    if (!argv.includes('--hidden')) requestShow();
   });
+
+  // The taskbar groups windows by this ID, and the installer's shortcuts carry
+  // the `appId` from electron-builder.yml. Left alone, Electron names the
+  // process `electron.app.tokio`, so the running window and the pinned or Start
+  // Menu icon were two different applications to Windows: a separate button
+  // each, and clicking the shortcut launched a second copy instead of doing
+  // what a taskbar button does. Keep this in step with `appId`.
+  if (process.platform === 'win32') app.setAppUserModelId('io.github.mariomontecatine.tokio');
 
   // `themeSource` stays at its default of 'system'. Setting it to 'dark' forced
   // `prefers-color-scheme: dark` on the page regardless of the machine, which
@@ -452,6 +577,9 @@ if (!app.requestSingleInstanceLock()) {
   nativeTheme.themeSource = 'system';
 
   app.on('before-quit', () => { quitting = true; });
+  // The daemon is a process of its own now, so quitting has to say so. After
+  // `before-quit`, which is what stops its exit from being read as a crash.
+  app.on('will-quit', () => { daemonProcess?.kill(); });
 
   /**
    * Work out what to show, and show it. Called again when setup resolves the
@@ -494,7 +622,10 @@ if (!app.requestSingleInstanceLock()) {
 
     currentToken = token;
     currentUrl = url;
-    showWindow(url);
+    if (showWhenReady) {
+      showWhenReady = false;
+      showWindow(url);
+    }
   }
 
   /** The setup screen is the same frameless window, pointed at a local file. */
@@ -533,12 +664,20 @@ if (!app.requestSingleInstanceLock()) {
     const old = windowRef;
     windowRef = null;
     if (old && !old.isDestroyed()) old.destroy();
+    // Somebody is looking at setup and just answered it; the dashboard replaces it.
+    showWhenReady = true;
     void next();
   }
 
   app.whenReady().then(async () => {
+    // The icon first, before anything that can take time. Every later request
+    // to see the window arrives through it or through a second launch, and an
+    // application that shows nothing for the seconds its daemon takes to start
+    // reads as one that did not start — so it gets clicked again.
+    buildTray();
+    if (!startHidden) requestShow();
     await boot();
-    app.on('activate', () => currentUrl && showWindow(currentUrl));
+    app.on('activate', requestShow);
   });
 
   // Observed and ignored, which is not the same as absent.

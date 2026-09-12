@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { parseEntry } from '../src/ingest/parse.ts';
 import { tailFile } from '../src/ingest/tail.ts';
 import { projectPathOf, unslugProject } from '../src/ingest/discover.ts';
+import { Ingestor, sweepTargets } from '../src/ingest/index.ts';
+import { openDb } from '../src/db.ts';
 import { creditsFor, familyOf, resolveRates } from '../src/meter/weights.ts';
 
 const FIXTURE = join(import.meta.dirname, 'fixtures', 'transcript.jsonl');
@@ -122,34 +124,73 @@ test('model families are recognised from full ids and aliases', () => {
   assert.equal(familyOf(null), 'unknown');
 });
 
-test('tailing resumes where it left off and never splits a line', () => {
+test('tailing resumes where it left off and never splits a line', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tokio-tail-'));
   const file = join(dir, 't.jsonl');
   writeFileSync(file, '{"a":1}\n{"b":2}\n');
-  const first = tailFile(file, 0);
+  const first = await tailFile(file, 0);
   assert.deepEqual(first.lines, ['{"a":1}', '{"b":2}']);
 
   // A half-written line must wait for its newline rather than be parsed short.
   writeFileSync(file, '{"a":1}\n{"b":2}\n{"c":');
-  const second = tailFile(file, first.offset);
+  const second = await tailFile(file, first.offset);
   assert.deepEqual(second.lines, []);
   assert.equal(second.offset, first.offset);
 
   writeFileSync(file, '{"a":1}\n{"b":2}\n{"c":3}\n');
-  assert.deepEqual(tailFile(file, first.offset).lines, ['{"c":3}']);
+  assert.deepEqual((await tailFile(file, first.offset)).lines, ['{"c":3}']);
 });
 
-test('a truncated file is read again from the start', () => {
+test('a truncated file is read again from the start', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tokio-rotate-'));
   const file = join(dir, 't.jsonl');
   writeFileSync(file, '{"a":1}\n{"b":2}\n');
-  const first = tailFile(file, 0);
+  const first = await tailFile(file, 0);
   writeFileSync(file, '{"z":9}\n');
-  const after = tailFile(file, first.offset);
+  const after = await tailFile(file, first.offset);
   assert.deepEqual(after.lines, ['{"z":9}']);
 });
 
-test('a project path is read from the transcript, not guessed from the folder name', () => {
+test('a sweep reads the live transcripts, and all of them only on a full pass', () => {
+  const now = Date.parse('2026-09-11T12:00:00Z');
+  const mtimes = new Map([
+    ['finished', now - 24 * 3_600_000],
+    ['live', now - 60_000],
+  ]);
+  const all = ['finished', 'live', 'never-read'];
+  // A file never read before is read: it may be a session that just started.
+  assert.deepEqual(sweepTargets(all, mtimes, now, false), ['live', 'never-read']);
+  // The full pass is what catches an old session being resumed.
+  assert.deepEqual(sweepTargets(all, mtimes, now, true), all);
+});
+
+test('a sweep lets the event loop run while it reads, and counts each response once', async () => {
+  // The daemon's server shares this loop, and inside the application so did the
+  // window: a sweep that held it made the window stop answering for as long as
+  // the sweep took. Nothing synchronous may come back into this path.
+  const home = mkdtempSync(join(tmpdir(), 'tokio-sweep-'));
+  const project = join(home, 'projects', '-repo-demo');
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, 'with-usage.jsonl'), readFileSync(FIXTURE));
+  for (let i = 0; i < 20; i++) writeFileSync(join(project, `empty-${i}.jsonl`), '');
+
+  const saved = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = home;
+  try {
+    const ingestor = new Ingestor(openDb(':memory:'), {} as any);
+    let loopRan = false;
+    setImmediate(() => { loopRan = true; });
+    const inserted = await ingestor.scan();
+    assert.ok(loopRan, 'the event loop turned while the sweep was reading');
+    assert.equal(inserted, 3, 'the repeated copies of a response collapse to one event');
+    assert.equal(await ingestor.scan(), 0, 'a second pass finds nothing new');
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = saved;
+  }
+});
+
+test('a project path is read from the transcript, not guessed from the folder name', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tokio-slug-'));
   const slug = '-home-me-work-my-project';
   const projectDir = join(dir, slug);
@@ -161,14 +202,14 @@ test('a project path is read from the transcript, not guessed from the folder na
 
   // The slug cannot tell a hyphen in a directory name from a path separator.
   assert.equal(unslugProject(slug), '/home/me/work/my/project');
-  assert.equal(projectPathOf(projectDir, slug), '/home/me/work/my-project');
+  assert.equal(await projectPathOf(projectDir, slug), '/home/me/work/my-project');
 });
 
-test('an empty project folder falls back to the slug rather than failing', () => {
+test('an empty project folder falls back to the slug rather than failing', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tokio-empty-'));
   const projectDir = join(dir, '-tmp-x');
   mkdirSync(projectDir);
-  assert.equal(projectPathOf(projectDir, '-tmp-x'), '/tmp/x');
+  assert.equal(await projectPathOf(projectDir, '-tmp-x'), '/tmp/x');
 });
 
 test("Claude Code's own session total is picked out of the transcript", () => {

@@ -18,6 +18,12 @@ the design decisions and is kept accurate.
   import with `ERR_UNKNOWN_BUILTIN_MODULE` and no hint as to why — measured, not assumed.
 - **Transcripts repeat each assistant response** several times with the same `requestId`. Any new
   code that reads them must deduplicate on `messageId` + `requestId`, or usage triples.
+- **Nothing synchronous touches the transcripts on a path the daemon runs.** Across the WSL
+  bridge every open or stat is a ~15ms round trip, and a synchronous sweep of a thousand
+  transcripts once held the event loop for 12–15s, freezing the server and, back when the
+  daemon ran in Electron's main process, the window. Use `node:fs/promises`. The desktop
+  daemon runs in a utility process (`desktop/daemon-host.js`); do not import daemon code into
+  `desktop/main.js`.
 - Relative imports use the `.ts` extension; `rewriteRelativeImportExtensions` fixes them on build.
 
 ## Testing

@@ -61,17 +61,17 @@ function bar(pct: number, width = 24): string {
   return '█'.repeat(filled) + '░'.repeat(width - filled);
 }
 
-function freshDb() {
+async function freshDb() {
   const cfg = loadConfig();
   const db = openDb();
   // Pick up anything Claude Code wrote since the last daemon pass, so one-shot
   // commands are accurate even with no daemon running.
-  new Ingestor(db, cfg).scan();
+  await new Ingestor(db, cfg).scan();
   return { db, cfg };
 }
 
 async function cmdStatus(refresh: boolean): Promise<void> {
-  const { db, cfg } = freshDb();
+  const { db, cfg } = await freshDb();
 
   // Reading /usage costs nothing and takes a few seconds, so do it whenever the
   // last one has gone stale — a wrong percentage is worse than a slow command.
@@ -137,8 +137,8 @@ function resolvePolicy(when: string | undefined): { runPolicy: RunPolicy; runAt:
   return { runPolicy: 'at', runAt: at };
 }
 
-function cmdAdd(prompt: string, opts: Record<string, any>): void {
-  const { db, cfg } = freshDb();
+async function cmdAdd(prompt: string, opts: Record<string, any>): Promise<void> {
+  const { db, cfg } = await freshDb();
   if (!prompt.trim()) throw new Error('give me a prompt to queue');
 
   const cwd = opts.cwd ? String(opts.cwd) : process.cwd();
@@ -147,7 +147,7 @@ function cmdAdd(prompt: string, opts: Record<string, any>): void {
 
   let resumeSessionId: string | null = opts.resume ?? null;
   if (resumeSessionId === 'last') {
-    const [latest] = recentSessions(claudeDir(cfg), cwd, 1);
+    const [latest] = await recentSessions(claudeDir(cfg), cwd, 1);
     if (!latest) throw new Error(`no previous session found for ${cwd}`);
     resumeSessionId = latest.sessionId;
     console.log(`  resuming "${latest.title || latest.sessionId.slice(0, 8)}"`);
@@ -174,8 +174,8 @@ function cmdAdd(prompt: string, opts: Record<string, any>): void {
   console.log(`  Safety    ${safety}${safety === 'full' ? '  ⚠ unrestricted: it can edit and run anything in that directory' : ''}\n`);
 }
 
-function cmdLs(all: boolean): void {
-  const { db } = freshDb();
+async function cmdLs(all: boolean): Promise<void> {
+  const { db } = await freshDb();
   const jobs = all ? listJobs(db) : listJobs(db, ['queued', 'deferred', 'running']);
   if (!jobs.length) return console.log('  Nothing queued.');
   console.log('');
@@ -186,8 +186,8 @@ function cmdLs(all: boolean): void {
   console.log('');
 }
 
-function cmdShow(id: string): void {
-  const { db } = freshDb();
+async function cmdShow(id: string): Promise<void> {
+  const { db } = await freshDb();
   const job = getJob(db, id);
   if (!job) throw new Error(`no job ${id}`);
   console.log(`\n  ${job.id} — ${job.status}`);
@@ -199,7 +199,7 @@ function cmdShow(id: string): void {
 }
 
 async function cmdRun(id: string): Promise<void> {
-  const { db, cfg } = freshDb();
+  const { db, cfg } = await freshDb();
   const job = getJob(db, id);
   if (!job) throw new Error(`no job ${id}`);
   const { Scheduler } = await import('./queue/scheduler.ts');
@@ -213,8 +213,8 @@ async function cmdRun(id: string): Promise<void> {
   if (done.output) console.log(`\n${done.output}`);
 }
 
-function cmdCalibrate(pctRaw: string, window: string): void {
-  const { db, cfg } = freshDb();
+async function cmdCalibrate(pctRaw: string, window: string): Promise<void> {
+  const { db, cfg } = await freshDb();
   const pct = Number(pctRaw);
   const s = computeStatus(db, cfg);
   const credits = window === 'week' ? s.week.window.credits : window === 'weekOpus' ? s.week.window.opusCredits : s.block.window.credits;
@@ -223,8 +223,8 @@ function cmdCalibrate(pctRaw: string, window: string): void {
   console.log(`  So your ${window} cap is about ${money(cap)}. Saved.\n`);
 }
 
-function cmdValue(): void {
-  const { db, cfg } = freshDb();
+async function cmdValue(): Promise<void> {
+  const { db, cfg } = await freshDb();
   const v = computeValue(db, cfg);
   const month = v.periods.month;
 
@@ -266,9 +266,9 @@ function cmdValue(): void {
   console.log('');
 }
 
-function cmdSessions(cwd: string): void {
+async function cmdSessions(cwd: string): Promise<void> {
   const cfg = loadConfig();
-  const sessions = recentSessions(claudeDir(cfg), cwd);
+  const sessions = await recentSessions(claudeDir(cfg), cwd);
   if (!sessions.length) return console.log(`  No sessions found for ${cwd}`);
   console.log('');
   for (const s of sessions) {
@@ -361,12 +361,12 @@ async function main(): Promise<void> {
     case 'show': return cmdShow(String(positionals[0] ?? ''));
     case 'run': return cmdRun(String(positionals[0] ?? ''));
     case 'rm': {
-      const { db } = freshDb();
+      const { db } = await freshDb();
       console.log(deleteJob(db, String(positionals[0] ?? '')) ? '  removed' : '  no such job');
       return;
     }
     case 'pause': {
-      const { db } = freshDb();
+      const { db } = await freshDb();
       updateJob(db, String(positionals[0] ?? ''), { runPolicy: 'manual' });
       console.log('  job will not start on its own');
       return;

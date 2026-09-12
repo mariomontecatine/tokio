@@ -256,6 +256,24 @@ Worth doing on its own, before any window exists. Concrete, located work:
   the application — real-time protection on, no exclusion. That is an argument
   for phase 5 rather than a code change.
 
+  `[done]` **Pacing was not enough: a sweep must not hold the event loop, and
+  must not touch finished sessions.** After the above, an installed build still
+  froze. Measured from Windows with the same calls the ingest makes, against a
+  1058-file, 94 MB history: **12.1s and 15.3s per sweep, all of it synchronous**,
+  so whatever shared the loop stopped for that long. In the application that
+  was the window (see phase 2). Pacing only spaced the freezes out.
+
+  Two changes, both needed. The reads are asynchronous now — `tailFile`,
+  discovery, and the project and session endpoints, which did the same thing
+  on every load of the compose panel. A sweep costs the same wall time over
+  9p and blocks nothing. And a sweep reads only **live** transcripts: anything
+  written in the last six hours, plus anything never seen. A full pass over all
+  of them runs every ten minutes, and it is what catches an old session being
+  resumed; a watched directory sees that immediately anyway. The rule is
+  `sweepTargets` in `src/ingest/index.ts`, and it is tested. A file the watcher
+  names is read on its own, whether it is live or not, so the rule never hides a
+  change somebody reported.
+
   `[done]` **Two installations at once — read both.** Someone with Claude Code
   natively on Windows *and* inside WSL has two sets of transcripts and one
   account, and discovery can only point at one, because the binary is in one
@@ -311,9 +329,39 @@ the window. On Linux, Electron needs GUI libraries the base image may not carry
 — `sudo apt install -y libnss3 libnspr4 libasound2t64`. Nothing to install on
 Windows or macOS.
 
-`[done]` **The window, and the daemon inside it.** `desktop/main.js` imports
-`startDaemon` and runs it in the Electron main process — the point of choosing
-Electron. Verified against real data.
+`[done]` **The window, and the daemon beside it.** `startDaemon` runs unchanged
+under Electron, which was the point of choosing it. It first ran in the main
+process and now runs in a utility process (`desktop/daemon-host.js`): the same
+executable and the same Node, and no second install. That process posts
+`listening` with the port and token, and is restarted with backoff if it dies.
+Verified against real data.
+
+**Why not the main process.** That thread is where Windows delivers every click
+the application gets: the tray, the window's buttons, dragging it, and the
+second launch asking to see it. The ingest's synchronous sweeps held it for
+12–15s at a time across the WSL bridge. On a build that had been open five
+hours, the main process answered Windows in **0 of 17 samples over 40s**. That
+is the "Not responding" the user saw. Clicks queued behind the sweep, closing
+took as long as the sweep had left, and clicking the icon repeatedly piled up
+more work for a thread that was not listening. Moving the daemon out fixes all
+of that even where a sweep is slow, and the asynchronous ingest (phase 1) keeps
+the daemon's own server answering too.
+
+Measured after the change, on Windows 11, with a packaged build reading the same
+1058-file history across the bridge into an **empty** database. That is the
+worst case, because the first pass reads all 94 MB. The config was isolated on
+another port so the installed copy was not touched.
+
+| | before | after |
+|---|---|---|
+| main process answering Windows | 0 of 17 | 39 of 39 over 45s |
+| window close (WM_CLOSE → hidden) | as long as the sweep had left | 6 ms |
+| second launch → window shown | dropped while booting | 250 ms, and in the foreground |
+| window visible after launch | tens of seconds | 2.6 s |
+| `/api/status` during the first pass | stalled 12–15s | p50 139 ms, max 312 ms |
+
+The tray toggle cannot be clicked from a script. It is covered by its unit test
+and still needs a human on Windows.
 
 `[done]` **Deferring to a daemon that is already running.** Anyone using
 `tokio start` has one up with the real database open; a second would be two
@@ -333,12 +381,36 @@ finished reading would miss the resets it exists to catch. The icon is a ring,
 generated rather than fetched — macOS gets a template image so the menu bar can
 recolour it, and saying so is the difference between an icon and a white smudge.
 
+`[done]` **The icon behaves like a tray icon.** Four faults, each seen on Windows:
+
+- **Clicking it never hid anything.** The handler only showed. It is a switch
+  now, and the obvious switch is wrong: pressing the icon moves focus to the
+  taskbar before the click is reported, so "hide if focused" never fires. A
+  window that blurred within 400ms of the click counts as having been in front
+  (`desktop/window-state.js`, tested).
+- **A covered window stayed covered.** `show()` does nothing to a visible window,
+  and Windows can refuse `focus()` to a process that is not in the foreground.
+  `raise` pins the window on top and releases it, which leaves it at the top of
+  the ordinary windows either way.
+- **The tray appeared only once the daemon was up**, and a second launch before
+  then was dropped. The tray is built first now, and a request to show that
+  arrives early is remembered.
+- **The taskbar saw two applications.** The installer's shortcuts carry the
+  `appId`, and the process ran as `electron.app.tokio` until
+  `setAppUserModelId` was called. Keep the two in step.
+
 `[done]` **Autostart, on all three.** `setLoginItemSettings` covers Windows and
 macOS. Electron has no Linux equivalent because there is no system call to make:
 the desktop environments agree on `~/.config/autostart/tokio.desktop`, and
 honouring it is the whole specification, so tokio writes and removes that file
 itself. Unpackaged the `Exec` line is Electron *plus the app directory*, or
 autostart would launch a bare Electron with nothing in it.
+
+Started at login, it goes to the tray. `openAsHidden` only ever meant that on
+macOS; Windows launched the window as a double-click would. The login item and
+the Linux `Exec` line now pass `--hidden`, and startup reads it. On Windows the
+argument is also part of how the entry is recognised, so
+`getLoginItemSettings` is asked with it.
 
 The checkbox reads the filesystem rather than remembering what it last did — the
 file is something a user can delete from outside the application, and a failed

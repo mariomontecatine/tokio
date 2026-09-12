@@ -355,12 +355,12 @@ export async function createServer(deps: ServerDeps) {
   // picker that offered only half of them would send work to the wrong list.
   app.get('/api/projects', async () => {
     const seen = new Set<string>();
-    return claudeDirs(cfg).flatMap((dir) => knownProjects(db, dir))
+    return (await Promise.all(claudeDirs(cfg).map((dir) => knownProjects(db, dir)))).flat()
       .filter((p) => !seen.has(p.path) && seen.add(p.path));
   });
   app.get('/api/sessions', async (req) => {
     const cwd = String((req.query as any)?.cwd ?? '');
-    return claudeDirs(cfg).flatMap((dir) => recentSessions(dir, cwd))
+    return (await Promise.all(claudeDirs(cfg).map((dir) => recentSessions(dir, cwd)))).flat()
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 15);
   });

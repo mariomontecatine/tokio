@@ -39,6 +39,30 @@ const SWEEP_IDLE_MS = 30_000;
 const BUSY_FOR_MS = 2 * 60_000;
 
 /**
+ * A sweep reads the transcripts that are live, and all of them only now and then.
+ *
+ * Finding out whether a file grew costs an open, a stat and a close: nothing on
+ * a local disk, a round trip each across the WSL bridge. Paid for a thousand
+ * finished sessions on every sweep, that was the whole of the sweep's cost and
+ * none of its value — a transcript nobody has written to in hours is not about
+ * to change. So a sweep reads what was written recently plus anything it has
+ * not seen before, and the full pass, which is what catches an old session
+ * being resumed, comes round every ten minutes. Where the directory can be
+ * watched, that resume is seen within a tenth of a second anyway.
+ */
+const FULL_SWEEP_MS = 10 * 60_000;
+const LIVE_FOR_MS = 6 * 60 * 60_000;
+
+/** Which transcripts a sweep reads. Exported for the tests: the rule is the point. */
+export function sweepTargets(all: string[], mtimes: Map<string, number>, now: number, full: boolean): string[] {
+  if (full) return all;
+  return all.filter((file) => {
+    const mtime = mtimes.get(file);
+    return mtime === undefined || now - mtime < LIVE_FOR_MS;
+  });
+}
+
+/**
  * Watches Claude Code's transcripts and mirrors billable usage into SQLite.
  *
  * Emits `usage` whenever new events land, so the dashboard can push an update
@@ -57,6 +81,10 @@ export class Ingestor extends EventEmitter {
   private lastUsageAt = 0;
   /** How long the last full pass took, so the sweep can pace itself. */
   private lastSweepMs = 0;
+  /** When the last pass over every transcript began; see FULL_SWEEP_MS. */
+  private lastFullAt = 0;
+  /** Last write time of every transcript read, so a sweep can pass over the finished ones. */
+  private mtimes = new Map<string, number>();
   private stopped = false;
   private db: Db;
   private cfg: Config;
@@ -72,18 +100,19 @@ export class Ingestor extends EventEmitter {
   /**
    * Read what has been appended.
    *
-   * With no argument this is a full pass over every transcript, which stays
-   * cheap after the first run because the stored offsets mean each byte is only
-   * ever read once. With one, it reads just the files the watcher named — the
-   * common case while you are working, and the difference between touching one
-   * file and stat-ing every session you have ever had.
+   * With no argument this is a sweep: every transcript on the first call and
+   * every ten minutes after, the live ones in between (see FULL_SWEEP_MS). The
+   * stored offsets mean each byte is only ever read once either way. With one,
+   * it reads just the files the watcher named — the common case while you are
+   * working, and the difference between touching one file and stat-ing every
+   * session you have ever had.
    */
-  scan(only?: string[]): number {
+  async scan(only?: string[]): Promise<number> {
     if (this.scanning) return 0;
     this.scanning = true;
     const startedAt = Date.now();
     try {
-      const files = only ?? claudeDirs(this.cfg).flatMap(discoverTranscripts);
+      const files = only ?? await this.sweepList();
       const readOffset = this.db.prepare('SELECT offset FROM files WHERE path = ?');
       const saveOffset = this.db.prepare(
         `INSERT INTO files (path, offset, size, seenAt) VALUES (?,?,?,?)
@@ -99,8 +128,15 @@ export class Ingestor extends EventEmitter {
       let inserted = 0;
 
       for (const file of files) {
+        // A pass yields now, so it can still be running when the daemon shuts
+        // down and closes the database; it stops rather than write after that.
+        if (this.stopped) break;
         const row = readOffset.get(file) as { offset: number } | undefined;
-        const { lines, offset, size } = tailFile(file, row?.offset ?? 0);
+        // The only await in the loop, and it comes before anything is written:
+        // from here to the saved offset everything is synchronous, so nothing
+        // else on this event loop can interleave with the transaction below.
+        const { lines, offset, size, mtimeMs } = await tailFile(file, row?.offset ?? 0);
+        this.mtimes.set(file, mtimeMs);
         if (!lines.length && offset === (row?.offset ?? 0)) continue;
 
         const fallback = unslugProject(basename(dirname(file)));
@@ -155,10 +191,26 @@ export class Ingestor extends EventEmitter {
       return inserted;
     } finally {
       this.scanning = false;
-      // Only a full pass measures the cost of a full pass; a targeted read of
-      // one file the watcher named says nothing about what a sweep will take.
+      // Only a sweep measures the cost of a sweep; a targeted read of one file
+      // the watcher named says nothing about what the next one will take.
       if (!only) this.lastSweepMs = Date.now() - startedAt;
+      // Whatever arrived while this pass ran has not been read yet. A pass
+      // yields to the event loop now, so changes land *during* one instead of
+      // queueing behind it, and this is the one place that sees all of them.
+      if (this.again && !this.stopped) {
+        this.again = false;
+        this.schedule();
+      }
     }
+  }
+
+  /** Every transcript now and then, the live ones in between. See FULL_SWEEP_MS. */
+  private async sweepList(): Promise<string[]> {
+    const all = (await Promise.all(claudeDirs(this.cfg).map(discoverTranscripts))).flat();
+    const now = Date.now();
+    const full = now - this.lastFullAt >= FULL_SWEEP_MS;
+    if (full) this.lastFullAt = now;
+    return sweepTargets(all, this.mtimes, now, full);
   }
 
   /**
@@ -172,7 +224,11 @@ export class Ingestor extends EventEmitter {
     if (this.stopped) return;
     if (path && path.endsWith('.jsonl')) this.touched.add(path);
     else this.sweepAll = true;
+    this.schedule();
+  }
 
+  private schedule(): void {
+    if (this.stopped) return;
     if (this.scanning) {
       this.again = true;
       return;
@@ -180,21 +236,29 @@ export class Ingestor extends EventEmitter {
     if (this.settleTimer) return;
     this.settleTimer = setTimeout(() => {
       this.settleTimer = null;
-      this.drain();
+      void this.drain().catch((err) => console.error(`tokio: reading transcripts failed — ${err?.message ?? err}`));
     }, SETTLE_MS);
     this.settleTimer.unref();
   }
 
-  private drain(): void {
+  private async drain(): Promise<void> {
+    // A pass is still running — the tail of the previous drain, or the first
+    // scan. It calls back when it ends, and what was asked for stays queued.
+    if (this.scanning) {
+      this.again = true;
+      return;
+    }
     const all = this.sweepAll;
     const files = [...this.touched];
     this.sweepAll = false;
     this.touched.clear();
     this.again = false;
 
-    this.scan(all || !files.length ? undefined : files);
-
-    if (this.again) this.request();
+    // The named files are read on their own, sweep or not. A sweep only reads
+    // live transcripts, and a session resumed after hours is exactly the one it
+    // would pass over — while the watcher has just said it changed.
+    if (files.length) await this.scan(files);
+    if (all) await this.scan();
   }
 
   /**
@@ -270,7 +334,7 @@ export class Ingestor extends EventEmitter {
 
   async start(): Promise<void> {
     this.stopped = false;
-    this.scan();
+    await this.scan();
     // chokidar catches the common case within a tenth of a second; the sweep
     // stays the safety net under it, and is what carries the load on any
     // filesystem the watcher cannot read at all. No awaitWriteFinish: a

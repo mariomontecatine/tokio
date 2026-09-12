@@ -1,19 +1,25 @@
-import { readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { statSync } from 'node:fs';
+import { open, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
-/** All Claude Code transcripts under `<claudeDir>/projects/<slug>/<sessionId>.jsonl`. */
-export function discoverTranscripts(claudeDir: string): string[] {
+/**
+ * All Claude Code transcripts under `<claudeDir>/projects/<slug>/<sessionId>.jsonl`.
+ *
+ * Asynchronous for the reason `tailFile` is: over the WSL bridge each directory
+ * read is a round trip, and the daemon's server shares this event loop.
+ */
+export async function discoverTranscripts(claudeDir: string): Promise<string[]> {
   const root = join(claudeDir, 'projects');
   let slugs: string[];
   try {
-    slugs = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    slugs = (await readdir(root, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name);
   } catch {
     return [];
   }
   const files: string[] = [];
   for (const slug of slugs) {
     try {
-      for (const entry of readdirSync(join(root, slug), { withFileTypes: true })) {
+      for (const entry of await readdir(join(root, slug), { withFileTypes: true })) {
         if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(join(root, slug, entry.name));
       }
     } catch {
@@ -36,13 +42,13 @@ export function unslugProject(slug: string): string {
 }
 
 /** The real working directory of a project, read from its newest transcript. */
-export function projectPathOf(projectDir: string, slug: string): string {
+export async function projectPathOf(projectDir: string, slug: string): Promise<string> {
   let newest: { path: string; mtime: number } | null = null;
   try {
-    for (const entry of readdirSync(projectDir, { withFileTypes: true })) {
+    for (const entry of await readdir(projectDir, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
       const path = join(projectDir, entry.name);
-      const mtime = statSync(path).mtimeMs;
+      const mtime = (await stat(path)).mtimeMs;
       if (!newest || mtime > newest.mtime) newest = { path, mtime };
     }
   } catch {
@@ -51,11 +57,11 @@ export function projectPathOf(projectDir: string, slug: string): string {
   if (!newest) return unslugProject(slug);
 
   try {
-    const fd = openSync(newest.path, 'r');
+    const handle = await open(newest.path, 'r');
     try {
       const buf = Buffer.allocUnsafe(65_536);
-      const read = readSync(fd, buf, 0, buf.length, 0);
-      for (const line of buf.subarray(0, read).toString('utf8').split('\n')) {
+      const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+      for (const line of buf.subarray(0, bytesRead).toString('utf8').split('\n')) {
         if (!line.includes('"cwd"')) continue;
         try {
           const cwd = JSON.parse(line).cwd;
@@ -65,7 +71,7 @@ export function projectPathOf(projectDir: string, slug: string): string {
         }
       }
     } finally {
-      closeSync(fd);
+      await handle.close();
     }
   } catch {
     // Unreadable transcript; fall back to the slug.

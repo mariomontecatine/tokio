@@ -30,6 +30,8 @@ extraMetadata:
 files:
   - dist/**/*
   - desktop/main.js
+  - desktop/daemon-host.js
+  - desktop/window-state.js
   - desktop/preload.js
   - desktop/setup.html
   - desktop/assets/**/*
