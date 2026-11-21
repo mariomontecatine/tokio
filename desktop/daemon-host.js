@@ -15,10 +15,15 @@
  */
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { adoptLoginShellPath } = require('./shell-path.js');
 
 const DIST = pathToFileURL(path.join(__dirname, '..', 'dist')).href;
 
 (async () => {
+  // Before anything looks for Claude Code, and before any job is spawned: an
+  // application started from the Finder has launchd's bare PATH, which finds
+  // neither `claude` nor the tools a queued job needs. See shell-path.js.
+  await adoptLoginShellPath(process.env);
   const { startDaemon } = await import(`${DIST}/daemon.js`);
   // Resolves once the server listens; the first scan and the first /usage read
   // carry on behind it and reach the dashboard as changes on its stream.

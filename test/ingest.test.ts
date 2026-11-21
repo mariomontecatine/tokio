@@ -92,10 +92,27 @@ test('a dated id whose catalog entry is named differently is still found', () =>
 });
 
 test('an unrecognised model falls back to its family, not to silence', () => {
+  // The family's *newest* tier: an id this file has never seen is newer than
+  // it, so the latest Opus price is the closest honest guess.
   const input = { ...MTOK, inputTokens: 1_000_000 };
   assert.equal(resolveRates('claude-opus-99').basis, 'family');
-  assert.equal(creditsFor(input, 'claude-opus-99'), 5);
+  assert.equal(creditsFor(input, 'claude-opus-99'), 4);
   assert.equal(resolveRates('claude-opus-5').basis, 'model');
+});
+
+test('Opus 5.5, Sonnet 5.5 and Fable 5.2 cost what Claude Code says they cost', () => {
+  // Read off the catalog in Claude Code 2.1.326. Before these entries existed
+  // they fell back to their family and Opus 5.5 was priced as Opus 5: a quarter
+  // more for input and output and two and a half times for every cache read,
+  // which on a cache-heavy month nearly doubled the total.
+  const input = { ...MTOK, inputTokens: 1_000_000 };
+  const read = { ...MTOK, cacheRead: 1_000_000 };
+  assert.equal(resolveRates('claude-opus-5-5').basis, 'model');
+  assert.equal(creditsFor(input, 'claude-opus-5-5'), 4);
+  assert.equal(creditsFor(read, 'claude-opus-5-5'), 0.2);
+  assert.equal(creditsFor(read, 'claude-sonnet-5-5'), 0.1);
+  assert.equal(creditsFor(input, 'claude-fable-5-2'), 8);
+  assert.equal(creditsFor(read, 'claude-fable-5-2'), 0.2);
 });
 
 test('fast mode, the US surcharge and web search all cost extra', () => {
@@ -110,11 +127,11 @@ test('fast mode, the US surcharge and web search all cost extra', () => {
 
 test('an unknown model in an expensive family is not priced as a cheap one', () => {
   // Fable and Mythos are not families the plan meters separately, so nothing
-  // downstream groups by them — but they cost five times the middle tier, and a
-  // model newer than this file has to land somewhere honest.
+  // downstream groups by them — but they cost several times the middle tier,
+  // and a model newer than this file has to land somewhere honest.
   const input = { ...MTOK, inputTokens: 1_000_000 };
-  assert.equal(creditsFor(input, 'claude-fable-9'), 10);
-  assert.equal(creditsFor(input, 'claude-mythos-9'), 10);
+  assert.equal(creditsFor(input, 'claude-fable-9'), 8);
+  assert.equal(creditsFor(input, 'claude-mythos-9'), 8);
 });
 
 test('model families are recognised from full ids and aliases', () => {

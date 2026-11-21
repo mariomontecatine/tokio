@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseUsageText, parseResetTime } from '../src/usage/probe.ts';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseUsageText, parseResetTime, probeUsage, rejectsNoSession } from '../src/usage/probe.ts';
+import { defaultConfig, type Config } from '../src/config.ts';
 
 const REAL = `You are currently using your subscription to power your Claude Code usage
 
@@ -68,4 +72,53 @@ test('midnight and noon are not confused', () => {
 test('an unparseable time is refused instead of guessed', () => {
   assert.equal(parseResetTime('sometime soon'), null);
   assert.equal(parseResetTime('Xxx 40, 99:99am'), null);
+});
+
+// ---- the read itself, against the fake CLI: no tokens, no real Claude Code ----
+
+const FAKE = join(import.meta.dirname, 'fake-claude.mjs');
+const fakeCfg = (): Config => ({ ...defaultConfig, claudeBin: FAKE, claudeLauncher: [process.execPath] });
+
+async function withFake<T>(mode: string | null, fn: (argsFile: string) => Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), 'tokio-probe-'));
+  const argsFile = join(dir, 'args.txt');
+  const before = { mode: process.env.TOKIO_FAKE_MODE, file: process.env.TOKIO_FAKE_ARGS_FILE };
+  if (mode) process.env.TOKIO_FAKE_MODE = mode; else delete process.env.TOKIO_FAKE_MODE;
+  process.env.TOKIO_FAKE_ARGS_FILE = argsFile;
+  try {
+    return await fn(argsFile);
+  } finally {
+    if (before.mode === undefined) delete process.env.TOKIO_FAKE_MODE; else process.env.TOKIO_FAKE_MODE = before.mode;
+    if (before.file === undefined) delete process.env.TOKIO_FAKE_ARGS_FILE; else process.env.TOKIO_FAKE_ARGS_FILE = before.file;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('a read asks Claude Code not to keep a session, so none piles up', async () => {
+  await withFake(null, async (argsFile) => {
+    const probe = await probeUsage(fakeCfg(), 10_000);
+    assert.equal(probe.error, null);
+    assert.equal(probe.sessionPct, 42);
+    const calls = readFileSync(argsFile, 'utf8').trim().split('\n');
+    assert.equal(calls.length, 1);
+    assert.match(calls[0]!, /--no-session-persistence/);
+  });
+});
+
+test('a CLI too old for the flag is asked again without it, rather than losing the gauges', async () => {
+  await withFake('old-cli', async (argsFile) => {
+    const probe = await probeUsage(fakeCfg(), 10_000);
+    assert.equal(probe.error, null);
+    assert.equal(probe.sessionPct, 42);
+    assert.equal(probe.weekPct, 17);
+    const calls = readFileSync(argsFile, 'utf8').trim().split('\n');
+    assert.equal(calls.length, 2);
+    assert.doesNotMatch(calls[1]!, /--no-session-persistence/);
+  });
+});
+
+test('only a complaint about that flag triggers the second attempt', () => {
+  assert.equal(rejectsNoSession("error: unknown option '--no-session-persistence'"), true);
+  assert.equal(rejectsNoSession("error: unknown option '--frobnicate'"), false);
+  assert.equal(rejectsNoSession('Invalid API key'), false);
 });

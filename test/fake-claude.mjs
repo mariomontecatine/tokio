@@ -8,8 +8,29 @@
 // The interpreter goes in front of it through `claudeLauncher`, the same vector
 // that reaches Claude Code inside WSL, so the fixture exercises that path too.
 
+import { appendFileSync } from 'node:fs';
+
 const args = process.argv.slice(2).join(' ');
 const say = (o) => process.stdout.write(JSON.stringify(o) + '\n');
+
+// Where a test wants to read back exactly what it was called with.
+if (process.env.TOKIO_FAKE_ARGS_FILE) appendFileSync(process.env.TOKIO_FAKE_ARGS_FILE, args + '\n');
+
+// `claude -p /usage --output-format json`: one JSON document, no turns, no cost.
+// `old-cli` stands in for a release that predates --no-session-persistence and
+// rejects it the way the real argument parser rejects anything it does not know.
+if (process.argv.includes('/usage')) {
+  if (process.env.TOKIO_FAKE_MODE === 'old-cli' && process.argv.includes('--no-session-persistence')) {
+    process.stderr.write("error: unknown option '--no-session-persistence'\n");
+    process.exit(1);
+  }
+  process.stdout.write(JSON.stringify({
+    type: 'result', subtype: 'success', is_error: false, num_turns: 0, total_cost_usd: 0,
+    result: 'Current session: 42% used · resets Sep 1, 1:19am (Europe/Madrid)\n'
+      + 'Current week (all models): 17% used · resets Sep 5, 8:59pm (Europe/Madrid)',
+  }));
+  process.exit(0);
+}
 
 // Drain the prompt on stdin: the executor writes it there and waits, and the
 // real CLI reads it. Resolving on `error` as well keeps a closed or absent

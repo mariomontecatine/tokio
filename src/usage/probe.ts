@@ -135,9 +135,44 @@ export function nextProbeDelay(t: ProbeTiming): number {
  * only source that knows the true percentage and the true reset time — every
  * local reconstruction is a guess next to it.
  */
-export function probeUsage(cfg: Config, timeoutMs = 30_000): Promise<UsageProbe> {
+export async function probeUsage(cfg: Config, timeoutMs = 30_000): Promise<UsageProbe> {
+  const first = await runUsage(cfg, [...USAGE_ARGS, NO_SESSION], timeoutMs);
+  if (first.kind === 'exited' && first.code !== 0 && rejectsNoSession(first.stderr)) {
+    return toProbe(await runUsage(cfg, USAGE_ARGS, timeoutMs));
+  }
+  return toProbe(first);
+}
+
+const USAGE_ARGS = ['-p', '/usage', '--output-format', 'json'];
+
+/**
+ * A read must not leave a session behind.
+ *
+ * Without this flag every read was a new Claude Code session in the daemon's
+ * working directory — one every few minutes, measured, each a 2.6 KB transcript
+ * holding nothing but `/usage`. They filled the picker of `claude --resume`
+ * there, filled tokio's own "Continue" list, and made `tokio add --resume last`
+ * pick a read rather than the conversation it was meant to continue.
+ *
+ * A CLI too old to know the flag says so and exits, and is asked again without
+ * it — those are exactly the versions whose `/usage` still prints percentages,
+ * so failing them over a flag would trade a cluttered picker for no gauges.
+ */
+const NO_SESSION = '--no-session-persistence';
+
+/** Exported for the tests: the rule is the point. */
+export function rejectsNoSession(stderr: string): boolean {
+  return /unknown option/i.test(stderr) && stderr.includes(NO_SESSION);
+}
+
+type UsageRun =
+  | { kind: 'exited'; code: number | null; stdout: string; stderr: string }
+  | { kind: 'timeout' }
+  | { kind: 'spawn-error'; message: string };
+
+function runUsage(cfg: Config, args: string[], timeoutMs: number): Promise<UsageRun> {
   return new Promise((resolve) => {
-    const { cmd, argv } = claudeInvocation(cfg, ['-p', '/usage', '--output-format', 'json']);
+    const { cmd, argv } = claudeInvocation(cfg, args);
     const child = spawn(cmd, argv, {
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -146,35 +181,39 @@ export function probeUsage(cfg: Config, timeoutMs = 30_000): Promise<UsageProbe>
     let out = '';
     let err = '';
     let settled = false;
-    const done = (probe: UsageProbe) => {
+    const done = (run: UsageRun) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(probe);
+      resolve(run);
     };
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      done({ at: Date.now(), ...EMPTY, error: 'timed out asking Claude Code for /usage' });
+      done({ kind: 'timeout' });
     }, timeoutMs);
 
     child.stdout.on('data', (c) => (out += c));
     child.stderr.on('data', (c) => (err += c));
-    child.on('error', (e) => done({ at: Date.now(), ...EMPTY, error: e.message }));
-
-    child.on('close', () => {
-      let text = '';
-      try {
-        text = String(JSON.parse(out).result ?? '');
-      } catch {
-        text = out;
-      }
-      const parsed = parseUsageText(text);
-      const worked = parsed.sessionPct !== null || parsed.weekPct !== null;
-      done({
-        at: Date.now(),
-        ...parsed,
-        error: worked ? null : (err.trim() || 'could not read a percentage from /usage — are you on a subscription plan?'),
-      });
-    });
+    child.on('error', (e) => done({ kind: 'spawn-error', message: e.message }));
+    child.on('close', (code) => done({ kind: 'exited', code, stdout: out, stderr: err }));
   });
+}
+
+function toProbe(run: UsageRun): UsageProbe {
+  if (run.kind === 'timeout') return { at: Date.now(), ...EMPTY, error: 'timed out asking Claude Code for /usage' };
+  if (run.kind === 'spawn-error') return { at: Date.now(), ...EMPTY, error: run.message };
+
+  let text = '';
+  try {
+    text = String(JSON.parse(run.stdout).result ?? '');
+  } catch {
+    text = run.stdout;
+  }
+  const parsed = parseUsageText(text);
+  const worked = parsed.sessionPct !== null || parsed.weekPct !== null;
+  return {
+    at: Date.now(),
+    ...parsed,
+    error: worked ? null : (run.stderr.trim() || 'could not read a percentage from /usage — are you on a subscription plan?'),
+  };
 }

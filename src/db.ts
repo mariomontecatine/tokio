@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
  * only apply to future transcripts and leave months of history priced at the
  * old numbers — with nothing on screen to say which was which.
  */
-const PRICING_VERSION = '4';
+const PRICING_VERSION = '5';
 
 let cached: Db | null = null;
 

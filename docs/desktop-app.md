@@ -97,6 +97,16 @@ so the `Current session: N% used · resets …` line that `parseUsageText` in
 `src/usage/probe.ts:66` matches survives the crossing intact. **The regex is the
 contract and the contract holds.**
 
+`[blocked]` **It no longer holds.** From Claude Code 2.1.312 (November 2026),
+`claude -p "/usage"` prints the `/cost` summary — "Total cost: $0.0000" and
+token counts — and no percentages, in a clean environment as well. Every
+platform falls back to estimates, and the gauges say "estimated" while the reach
+panel still says they come from Anthropic. Neither copy Claude Code keeps on disk
+is a live substitute: `cachedUsageUtilization` in `~/.claude.json` is only
+refreshed by the interactive `/usage`, and the desktop application's
+`plan-usage-history.json` stops when that application is closed. Which source
+replaces it is undecided.
+
 Two things that came with it, neither a surprise once seen:
 
 - `opusPct` comes back `null`. There is no `Current week (Opus…)` line for a
@@ -693,6 +703,44 @@ effort, and it is the step people discover too late:
   to exactly the audience this is for. Certificate ~100-400 EUR/year, and
   SmartScreen reputation still takes weeks to accumulate after you sign.
 - macOS needs an Apple Developer account (99 USD/year) and notarisation.
+
+### macOS `[doing]`
+
+`[done]` **It builds and runs, unsigned.** `CSC_IDENTITY_AUTO_DISCOVERY=false
+npm run pack` produces `release/mac-arm64/tokio.app`: arm64 only, carrying
+Electron's ad-hoc linker signature and no Developer ID. Built on the machine
+that runs it, it has no quarantine attribute and opens without a Gatekeeper
+prompt; downloaded, it would be refused until it is signed and notarised. It
+needed a 1024 icon first — the old 256px one was below electron-builder's 512
+floor for an icns (`ERR_ICON_TOO_SMALL`).
+
+`[done]` **An application started from the Finder could not find Claude
+Code.** launchd hands it `/usr/bin:/bin:/usr/sbin:/sbin` and nothing else, so
+`~/.local/bin`, where Claude Code's installer puts `claude`, was not on the
+PATH. Reproduced with that environment: discovery answered `unknown`, and a
+queued job would have run without `node`, `npm` or `brew`. It never showed in
+development because `npm run app` inherits the terminal's PATH. The daemon
+host now asks the login shell for its PATH before the daemon starts
+(`desktop/shell-path.js`, tested with an injected shell so the suite never runs
+anybody's startup files). Measured at 29ms. Verified on the installed build
+launched with `open`: the listener belonged to `/Applications/tokio.app`, and
+`/api/reach` answered `how: path` with the `~/.local/bin` binary.
+
+`[done]` **Reading `/usage` no longer leaves a Claude Code session behind.**
+Every read was a new 2.6 KB session in the daemon's working directory, one
+every few minutes, filling `claude --resume` there and the Continue list in
+Compose. `--no-session-persistence` stops it, verified on the installed build:
+no session file after a read. A CLI that rejects the flag is asked again
+without it.
+
+`[open]` **Started at login, the window still opens.** The login item's
+`--hidden` is a Windows-only argument and `openAsHidden` no longer exists, so
+nothing tells the macOS build it was launched at login. Untested — it needs a
+real login to see.
+
+`[open]` Not yet tried on macOS: a queued job end to end (it spends tokens),
+the folder-permission prompts macOS raises when a job works in `~/Documents` or
+`~/Desktop`, the tray click, and vibrancy (see phase 3).
 
 ---
 

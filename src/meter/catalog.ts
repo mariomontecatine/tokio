@@ -43,8 +43,11 @@ const tier = (
 
 export const TIERS = {
   tier_2_10: tier(2, 10, 2.5, 4, 0.2),
+  tier_2_10_cache_read_0_10: tier(2, 10, 2.5, 4, 0.1),
   tier_3_15: tier(3, 15, 3.75, 6, 0.3),
+  tier_4_20_cache_read_0_20: tier(4, 20, 5, 8, 0.2),
   tier_5_25: tier(5, 25, 6.25, 10, 0.5),
+  tier_8_40_cache_read_0_20: tier(8, 40, 10, 16, 0.2),
   tier_10_50: tier(10, 50, 12.5, 20, 1),
   tier_10_50_cache_read_0_25: tier(10, 50, 12.5, 20, 0.25),
   tier_15_75: tier(15, 75, 18.75, 30, 1.5),
@@ -64,6 +67,7 @@ export const MODEL_TIER: Record<string, TierName> = {
   'claude-sonnet-4-5': 'tier_3_15',
   'claude-sonnet-4-6': 'tier_3_15',
   'claude-sonnet-5': 'tier_2_10',
+  'claude-sonnet-5-5': 'tier_2_10_cache_read_0_10',
   'claude-opus-4-0': 'tier_15_75',
   'claude-opus-4-1': 'tier_15_75',
   'claude-opus-4-5': 'tier_5_25',
@@ -71,10 +75,17 @@ export const MODEL_TIER: Record<string, TierName> = {
   'claude-opus-4-7': 'tier_5_25',
   'claude-opus-4-8': 'tier_5_25',
   'claude-opus-5': 'tier_5_25',
+  'claude-opus-5-5': 'tier_4_20_cache_read_0_20',
   'claude-fable-5': 'tier_10_50',
   'claude-fable-5-1': 'tier_10_50_cache_read_0_25',
+  'claude-fable-5-2': 'tier_8_40_cache_read_0_20',
   'claude-mythos-5': 'tier_10_50',
   'claude-mythos-5-1': 'tier_10_50_cache_read_0_25',
+  'claude-mythos-5-2': 'tier_8_40_cache_read_0_20',
+  // `claude-haiku-5-5` is deliberately absent. Claude Code's entry for it adds
+  // a long-prompt rate above 100k prompt tokens, and how that rate is applied
+  // is not mirrored here yet; until it is, Haiku 5.5 falls back to its family
+  // like any model this file does not know.
 };
 
 /** Fast mode on Opus 4.6/4.7 predates the current rates and is priced apart. */
@@ -100,11 +111,11 @@ export function fastModeRates(normalizedId: string): Rates | null {
  * under-counting.
  */
 export const FAMILY_FALLBACK: Record<ModelFamily | 'fable' | 'mythos', TierName> = {
-  opus: 'tier_5_25',
-  sonnet: 'tier_2_10',
+  opus: 'tier_4_20_cache_read_0_20',
+  sonnet: 'tier_2_10_cache_read_0_10',
   haiku: 'haiku_45',
-  fable: 'tier_10_50_cache_read_0_25',
-  mythos: 'tier_10_50_cache_read_0_25',
+  fable: 'tier_8_40_cache_read_0_20',
+  mythos: 'tier_8_40_cache_read_0_20',
   unknown: 'tier_3_15',
 };
 

@@ -171,9 +171,10 @@ que hay detrás de su propio `/cost` y de las etiquetas por Mtok de `/model`— 
 modelo a tramo, los mismos recargos. De ahí salen tres cosas, y son la diferencia entre un número
 y una suposición:
 
-- **Los precios son por modelo, no por familia.** Opus 4.1 va a `$15/$75` por Mtok; Opus 4.5 y
-  todo lo posterior, a `$5/$25`. Sonnet 4.6 son `$3/$15` y Sonnet 5 `$2/$10`. Una tarifa por
-  familia se equivoca en la mayoría de los transcripts por un múltiplo, no por un redondeo.
+- **Los precios son por modelo, no por familia.** Opus 4.1 va a `$15/$75` por Mtok; de Opus 4.5
+  a Opus 5, a `$5/$25`, y Opus 5.5 a `$4/$20`, con la lectura de caché a una quinta parte de antes.
+  Sonnet 4.6 son `$3/$15` y Sonnet 5 `$2/$10`. Una tarifa por familia se equivoca en la mayoría
+  de los transcripts por un múltiplo, no por un redondeo.
 - **Los extras también cuentan.** El modo rápido es el mismo modelo a tarifa premium,
   `inference_geo: "us"` lleva un 10% de recargo, las escrituras de caché se reparten entre el
   tramo de 5 minutos y el de 1 hora, y las búsquedas web del servidor se cobran por petición. Las

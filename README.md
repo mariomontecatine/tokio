@@ -183,9 +183,10 @@ Not from us. Claude Code ships a hand-maintained model catalog — the same one 
 mirrors it: the same tiers, the same model-to-tier mapping, the same surcharges. Three things
 follow, and they are the difference between a number and a guess:
 
-- **Prices are per model, not per family.** Opus 4.1 is `$15/$75` per Mtok; Opus 4.5 and
-  everything after it is `$5/$25`. Sonnet 4.6 is `$3/$15`, Sonnet 5 is `$2/$10`. A family-wide
-  rate misprices most transcripts by a multiple, not by a rounding error.
+- **Prices are per model, not per family.** Opus 4.1 is `$15/$75` per Mtok; Opus 4.5 through
+  Opus 5 is `$5/$25`, and Opus 5.5 is `$4/$20` with cache reads at a fifth of the old rate.
+  Sonnet 4.6 is `$3/$15`, Sonnet 5 is `$2/$10`. A family-wide rate misprices most transcripts by
+  a multiple, not by a rounding error.
 - **The extras are counted too.** Fast mode is the same model at premium rates, `inference_geo:
   "us"` carries a 10% surcharge, cache writes are split across their 5-minute and 1-hour tiers,
   and server-side web searches are billed per request. All four are in the transcript, so all

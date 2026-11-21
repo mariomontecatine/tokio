@@ -31,6 +31,10 @@ files:
   - dist/**/*
   - desktop/main.js
   - desktop/daemon-host.js
+  # Required by daemon-host.js before the daemon starts. Files are listed one by
+  # one, so a helper missing here is missing from the asar and the daemon
+  # crash-loops on its first require.
+  - desktop/shell-path.js
   - desktop/window-state.js
   - desktop/preload.js
   - desktop/setup.html

@@ -267,7 +267,7 @@ export default function App() {
   if (error && !status) {
     return (
       <div className="shell">
-        <header className="masthead"><Wordmark /></header>
+        <header className="masthead">{!desktop() && <Wordmark />}</header>
         <div className="block-empty stand-alone">
           <strong>{t('error.daemon')}</strong>
           <span>{t('error.daemon.help')}</span>
@@ -276,7 +276,7 @@ export default function App() {
     );
   }
   if (!status) {
-    return <div className="shell"><header className="masthead"><Wordmark /></header></div>;
+    return <div className="shell"><header className="masthead">{!desktop() && <Wordmark />}</header></div>;
   }
 
   const verdict = readVerdict(status, t);
@@ -292,7 +292,11 @@ export default function App() {
           empty pixels that exists only to be grabbed. In a browser tab the
           attributes below do nothing and the row is what it always was. */}
       <header className="masthead" data-app={bridge?.platform}>
-        <Wordmark />
+        {/* Only in a browser tab, which is a page and needs a heading. In the
+            application the window is already tokio's — its icon is in the Dock
+            and the menu bar — and a native window does not repeat its logo
+            beside the traffic lights. */}
+        {!bridge && <Wordmark />}
         <span className="plan">{status.planLabel}</span>
         {live === false && <span className="stale">{t('error.stale')}</span>}
         <div className="spacer" />
