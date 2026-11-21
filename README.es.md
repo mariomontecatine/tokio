@@ -589,7 +589,7 @@ escucha solo en loopback salvo que lo cambies a propósito.
 ## Desarrollo
 
 ```bash
-npm test          # 262 tests, sin gastar tokens: los dos ejecutores corren contra CLIs falsos
+npm test          # 273 tests, sin gastar tokens: los dos ejecutores corren contra CLIs falsos
 npm run dev       # daemon desde el código, sin compilar
 npm run dev:web   # panel con recarga en caliente
 ```

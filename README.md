@@ -620,7 +620,7 @@ to loopback unless you deliberately change it. Details in
 ## Development
 
 ```bash
-npm test          # 262 tests, no tokens spent: both executors run against fake CLIs
+npm test          # 273 tests, no tokens spent: both executors run against fake CLIs
 npm run dev       # daemon from source, no build step
 npm run dev:web   # dashboard with hot reload, proxying to the daemon
 ```
