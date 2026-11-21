@@ -377,8 +377,8 @@ query string.
 `[done]` **Tray icon, and closing the window does not quit.** The daemon is the
 point: it polls, it ingests, and it fires the queue when a window resets. An
 application that stopped doing that because someone closed a window they had
-finished reading would miss the resets it exists to catch. The icon is a ring,
-generated rather than fetched — macOS gets a template image so the menu bar can
+finished reading would miss the resets it exists to catch. The icon is the
+sun with the tower cut through it (see phase 3) — macOS gets a template image so the menu bar can
 recolour it, and saying so is the difference between an icon and a white smudge.
 
 `[done]` **The icon behaves like a tray icon.** Four faults, each seen on Windows:
@@ -565,10 +565,27 @@ The three state colours are the thing that could not simply be reused. They are
 the message here, and they are tuned against near-black: `--ease` at `#2fd98a`
 carries 10.6:1 on the dark ground and **1.6:1 on white**, which is not a warning
 anybody can read. The light values were picked against the worst background they
-land on rather than against white — ease 4.72, tight 5.19, over 4.92, parked
-5.54. `--ink-faint` lands at 3.43, the one value under AA for body text,
-deliberately: it is 3.35 in the dark theme, and lifting it here would make the
+land on rather than against white — ease 4.73, tight 5.20, over 4.93, parked
+5.56. `--ink-faint` lands at 3.47, the one value under AA for body text,
+deliberately: it is 3.33 in the dark theme, and lifting it here would make the
 light theme louder than the dark one rather than equivalent to it.
+
+`[done]` **The greys are neutral now, and the brand has one colour.** The
+palette carried a navy tint, and so did the old icon; both are black, white and
+the sun's red (`--sun`, `#e8401c`) now. Each grey was swapped for the neutral
+grey of the *same luminance*, which is why the ratios above moved by a few
+hundredths and no more: the palette lost its colour, not its legibility.
+`--sun` is not a state. The three state colours still mean what they meant, and
+the brand red stays in the icon and on the wordmark's dot.
+
+`[done]` **The icon and the wordmark.** The Tokyo Skytree in front of a centred
+red sun, and "tokio" set in square blocks — one block, one token. The masters
+are SVGs in `docs/brand/`; `desktop/assets/` holds the PNGs rendered from them
+(a 1024 icon, which electron-builder needs at 512 or more for macOS, the colour
+tray icon for Windows and Linux, and the macOS template pair). The wordmark is
+a single path on a 10-unit grid, drawn at 20px so its edges fall on whole
+pixels; as separate shapes, each block was anti-aliased on its own and hairlines
+showed between the rows.
 
 Verified by emulating the media query against the running app rather than by
 changing the machine's settings, in both directions, with a capture of each.

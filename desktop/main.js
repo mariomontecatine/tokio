@@ -36,8 +36,8 @@ const DIST = pathToFileURL(path.join(__dirname, '..', 'dist')).href;
  * shared between the stylesheet and the main process, and one that existed only
  * to carry two hex values would cost more than it saves.
  */
-const GROUND = '#0b0d10';
-const GROUND_LIGHT = '#edf0f4';
+const GROUND = '#0d0d0d';
+const GROUND_LIGHT = '#f0f0f0';
 
 /**
  * Who, if anyone, is on the port — and whether we can actually talk to them.
@@ -670,6 +670,12 @@ if (!app.requestSingleInstanceLock()) {
   }
 
   app.whenReady().then(async () => {
+    // Unpackaged, this is Electron's own binary, so the Dock shows Electron's
+    // icon. A packaged build carries ours in the bundle and needs none of this.
+    if (process.platform === 'darwin' && !app.isPackaged) {
+      app.dock?.setIcon(path.join(__dirname, 'assets', 'icon.png'));
+    }
+
     // The icon first, before anything that can take time. Every later request
     // to see the window arrives through it or through a second launch, and an
     // application that shows nothing for the seconds its daemon takes to start

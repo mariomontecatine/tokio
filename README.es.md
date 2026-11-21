@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/brand/icon.svg" width="112" alt="">
+
 # tokio
 
 **Deja el prompt para luego. Vigila tu cuota. Deja de vigilar el reloj del reset.**

@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/brand/icon.svg" width="112" alt="">
+
 # tokio
 
 **Queue prompts for later. Watch your quota. Stop babysitting the reset clock.**

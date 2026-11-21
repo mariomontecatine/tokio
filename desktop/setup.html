@@ -23,17 +23,17 @@
 <title>tokio — setup</title>
 <style>
   :root {
-    --ground: #0b0d10; --surface: #14171c; --hairline: #222731;
-    --ink: #eceff3; --ink-dim: #8a93a1; --ink-faint: #5c6675;
-    --tight: #f5b93b; --ease: #2fd98a;
+    --ground: #0d0d0d; --surface: #171717; --hairline: #272727;
+    --ink: #efefef; --ink-dim: #929292; --ink-faint: #656565;
+    --tight: #f5b93b; --ease: #2fd98a; --sun: #e8401c;
     --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
     --mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, monospace;
     color-scheme: dark;
   }
   @media (prefers-color-scheme: light) {
     :root {
-      --ground: #edf0f4; --surface: #f7f8fa; --hairline: #d5dae2;
-      --ink: #11151c; --ink-dim: #565f6d; --ink-faint: #79818f;
+      --ground: #f0f0f0; --surface: #f8f8f8; --hairline: #dadada;
+      --ink: #151515; --ink-dim: #5e5e5e; --ink-faint: #808080;
       --tight: #8a5a00; --ease: #097a4a;
       color-scheme: light;
     }
@@ -50,7 +50,9 @@
     display: flex; align-items: center; gap: 10px; padding: 18px 22px;
     -webkit-app-region: drag; user-select: none;
   }
-  .wordmark { font-size: 15px; font-weight: 600; }
+  /* The same blocks as web/src/Wordmark.tsx, at two pixels a block. */
+  .wordmark { display: block; flex: none; height: 20px; width: auto; color: var(--ink); }
+  .wordmark-sun { fill: var(--sun); }
   .where { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
   .spacer { flex: 1; }
   .winctl {
@@ -95,7 +97,7 @@
 </head>
 <body>
   <header>
-    <span class="wordmark">tokio</span>
+    <svg class="wordmark" viewBox="0 0 290 100" role="img" aria-label="tokio"><path fill="currentColor" shape-rendering="crispEdges" d="M0 40h50v20h-50zM10 10h20v30h-20zM10 60h20v20h-20zM10 80h40v10h-40zM20 90h30v10h-30zM60 50h60v10h-60zM60 60h20v20h-20zM60 80h60v10h-60zM70 40h40v10h-40zM70 90h40v10h-40zM100 60h20v20h-20zM130 0h20v60h-20zM130 60h40v20h-40zM130 80h20v20h-20zM160 50h20v10h-20zM160 80h20v10h-20zM170 40h20v10h-20zM170 90h20v10h-20zM200 40h20v60h-20zM230 50h60v10h-60zM230 60h20v20h-20zM230 80h60v10h-60zM240 40h40v10h-40zM240 90h40v10h-40zM270 60h20v20h-20z"/><circle class="wordmark-sun" cx="210" cy="20" r="12"/></svg>
     <span class="where" id="where"></span>
     <span class="spacer"></span>
     <button class="winctl" id="min" title="Minimise">&#8211;</button>

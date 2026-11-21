@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Reach } from './Reach';
+import { Refresh } from './Refresh';
 import { api, useDashboard, type PeriodName, type Status, type ValueReport } from './api';
 import { Ring } from './Ring';
 import { readVerdict, turnCount } from './verdict';
@@ -13,6 +14,7 @@ import { Expand } from './Expand';
 import { clock, money, pct } from './format';
 import { desktop, drawsOwnControls } from './desktop';
 import { WindowControls } from './WindowControls';
+import { Wordmark } from './Wordmark';
 import { useLang, localeOf, type Lang, type Translate } from './i18n';
 import { startSmoothScroll } from './smoothScroll';
 
@@ -265,7 +267,7 @@ export default function App() {
   if (error && !status) {
     return (
       <div className="shell">
-        <header className="masthead"><span className="wordmark">tokio</span></header>
+        <header className="masthead"><Wordmark /></header>
         <div className="block-empty stand-alone">
           <strong>{t('error.daemon')}</strong>
           <span>{t('error.daemon.help')}</span>
@@ -274,7 +276,7 @@ export default function App() {
     );
   }
   if (!status) {
-    return <div className="shell"><header className="masthead"><span className="wordmark">tokio</span></header></div>;
+    return <div className="shell"><header className="masthead"><Wordmark /></header></div>;
   }
 
   const verdict = readVerdict(status, t);
@@ -290,10 +292,11 @@ export default function App() {
           empty pixels that exists only to be grabbed. In a browser tab the
           attributes below do nothing and the row is what it always was. */}
       <header className="masthead" data-app={bridge?.platform}>
-        <span className="wordmark">tokio</span>
+        <Wordmark />
         <span className="plan">{status.planLabel}</span>
         {live === false && <span className="stale">{t('error.stale')}</span>}
         <div className="spacer" />
+        <Refresh t={t} onDone={refresh} />
         {/* A segmented control rather than two buttons: the pill slides between
             fixed-width halves, so switching language moves the indicator and
             nothing else. */}

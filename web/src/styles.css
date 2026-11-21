@@ -15,16 +15,28 @@
  * is loaded from the network: this runs on localhost, sometimes with no network
  * at all, and a dashboard that waits on a font CDN to render is a broken one.
  */
+/*
+ * Neutral greys, black, white and the sun's red — the icon's palette.
+ *
+ * The greys had a navy tint. Each one was replaced by the neutral grey of the
+ * same luminance, so every contrast ratio quoted in this file and in
+ * docs/desktop-app.md moved by a few hundredths at most: the palette lost its
+ * colour, not its legibility.
+ */
 :root {
-  --ground: #0b0d10;
-  --surface: #14171c;
-  --surface-2: #1a1e25;
-  --hairline: #222731;
-  --hairline-soft: #191d24;
+  --ground: #0d0d0d;
+  --surface: #171717;
+  --surface-2: #1e1e1e;
+  --hairline: #272727;
+  --hairline-soft: #1d1d1d;
 
-  --ink: #eceff3;
-  --ink-dim: #8a93a1;
-  --ink-faint: #5c6675;
+  --ink: #efefef;
+  --ink-dim: #929292;
+  --ink-faint: #656565;
+
+  /* The brand's one colour: the sun in the icon and the dot on the wordmark's
+     i. Not a state — the three below are the readings, and this is not one. */
+  --sun: #e8401c;
 
   --ease: #2fd98a;
   --tight: #f5b93b;
@@ -63,32 +75,32 @@
  * anybody can read. The light values are darker and were chosen against the
  * *worst* background they land on, `--ground`, not against white:
  *
- *   ease #097a4a 4.72   tight #8a5a00 5.19   over #c62828 4.92   parked 5.54
+ *   ease #097a4a 4.73   tight #8a5a00 5.20   over #c62828 4.93   parked 5.56
  *
- * `--ink-faint` sits at 3.43, which is the one value below AA for body text —
- * deliberately, because it is 3.35 in the dark theme too. It is used for text
+ * `--ink-faint` sits at 3.47, which is the one value below AA for body text —
+ * deliberately, because it is 3.33 in the dark theme too. It is used for text
  * that is deliberately quiet, and making it darker here would make the light
  * theme louder than the dark one rather than equivalent to it.
  */
 @media (prefers-color-scheme: light) {
   :root {
-    --ground: #edf0f4;
-    --surface: #f7f8fa;
+    --ground: #f0f0f0;
+    --surface: #f8f8f8;
     --surface-2: #ffffff;
-    --hairline: #d5dae2;
-    --hairline-soft: #e3e7ed;
+    --hairline: #dadada;
+    --hairline-soft: #e7e7e7;
 
-    --ink: #11151c;
-    --ink-dim: #565f6d;
-    --ink-faint: #79818f;
+    --ink: #151515;
+    --ink-dim: #5e5e5e;
+    --ink-faint: #808080;
 
     --ease: #097a4a;
     --tight: #8a5a00;
     --over: #c62828;
     --parked: #3a55c8;
 
-    --shadow-raised: 0 1px 2px rgb(15 20 30 / 0.12);
-    --shadow-float: 0 6px 20px rgb(15 20 30 / 0.16);
+    --shadow-raised: 0 1px 2px rgb(20 20 20 / 0.12);
+    --shadow-float: 0 6px 20px rgb(20 20 20 / 0.16);
 
     color-scheme: light;
   }
@@ -136,11 +148,16 @@ button, input, textarea, select { font: inherit; color: inherit; }
   gap: 12px;
   padding: 26px 0 22px;
 }
+/* 20px is two pixels per block, so the edges land on whole pixels; see
+   Wordmark.tsx. `flex: none` keeps the masthead from squeezing it. */
 .wordmark {
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  display: block;
+  flex: none;
+  height: 20px;
+  width: auto;
+  color: var(--ink);
 }
+.wordmark-sun { fill: var(--sun); }
 .masthead .plan {
   font-family: var(--mono);
   font-size: 11px;
@@ -705,6 +722,49 @@ html {
   transition: transform 420ms var(--swift);
 }
 .segmented[data-active='en'] .segmented-pill { transform: translateX(34px); }
+
+/* ---------- reading again ---------- */
+
+/* The language switch's neighbour, so it wears the same thing: the same pill
+   ground, the same height, the same colour change on the same curve. The press
+   is `.btn`'s, and the turn uses `--swift` so each revolution eases in and out —
+   which is also what lets it stop at the end of one without a visible jolt. */
+.refresh {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: color 260ms var(--swift), background-color 260ms var(--swift), transform 160ms var(--swift);
+}
+.refresh:hover:not(:disabled) { color: var(--ink); background: var(--surface-2); }
+.refresh:active:not(:disabled) { transform: scale(0.94); }
+.refresh:disabled { cursor: default; }
+.refresh.spin { color: var(--ink); }
+.refresh svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.refresh.spin svg { animation: refresh-turn 900ms var(--swift) infinite; }
+
+@keyframes refresh-turn {
+  to { transform: rotate(360deg); }
+}
+
+/* With the turn collapsed, something still has to say it is working. */
+@media (prefers-reduced-motion: reduce) {
+  .refresh:disabled { opacity: 0.45; }
+}
 
 /* Both labels fit without the neighbours moving when the language changes. */
 .details-toggle {

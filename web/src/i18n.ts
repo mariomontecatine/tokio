@@ -103,6 +103,9 @@ const en: Dict = {
   'details.show': 'Details',
   'details.hide': 'Close',
 
+  'refresh.label': 'Refresh — ask Claude Code for the numbers now',
+  'refresh.failed': 'Could not read them: {error}',
+
   'reach.title': 'What these numbers can see',
   'reach.gauges': 'The rings come from Anthropic, through Claude Code, and cover your whole account — every device, and the browser too.',
   'reach.priced.local': 'Everything with a price on it — payback, burn rate, the heatmap — is rebuilt from transcripts on this machine. Work done on claude.ai or on another computer leaves none, so it is missing from those figures and cannot be recovered.',
@@ -249,6 +252,9 @@ const es: Dict = {
 
   'details.show': 'Detalles',
   'details.hide': 'Cerrar',
+
+  'refresh.label': 'Actualizar — pedir a Claude Code las cifras de ahora',
+  'refresh.failed': 'No se pudieron leer: {error}',
 
   'reach.title': 'Qué alcanzan estos números',
   'reach.gauges': 'Los anillos vienen de Anthropic, a través de Claude Code, y cubren toda tu cuenta: todos los dispositivos, y también el navegador.',
