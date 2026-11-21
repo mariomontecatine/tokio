@@ -241,7 +241,7 @@ function toStatus(
   };
 }
 
-export function computeStatus(db: Db, cfg: Config, now = Date.now()): Status {
+export function computeStatus(db: Db, cfg: Config, now = Date.now(), plan = resolvePlan(cfg)): Status {
   const attempt = latestAttempt(db);
   // Session and week are read separately: `/usage` can return one without the
   // other around a reset, and a reply missing the session line must not throw
@@ -283,9 +283,9 @@ export function computeStatus(db: Db, cfg: Config, now = Date.now()): Status {
   const weekCap = capFromProbe(atWeekRead?.credits ?? 0, fresh?.weekPct ?? null);
   const opusCapReported = capFromProbe(atWeekRead?.opusCredits ?? 0, fresh?.opusPct ?? null);
 
-  const blockCapInfo = bestCap(blockCap, resolveCap(db, cfg, 'block'));
-  const weekCapInfo = bestCap(weekCap, resolveCap(db, cfg, 'week'));
-  const opusCapInfo = bestCap(opusCapReported, resolveCap(db, cfg, 'weekOpus'));
+  const blockCapInfo = bestCap(blockCap, resolveCap(db, cfg, 'block', plan.plan));
+  const weekCapInfo = bestCap(weekCap, resolveCap(db, cfg, 'week', plan.plan));
+  const opusCapInfo = bestCap(opusCapReported, resolveCap(db, cfg, 'weekOpus', plan.plan));
 
   const recent = events.filter((e) => e.ts >= now - BURN_SAMPLE_MS);
   const burnRate = recent.reduce((s, e) => s + e.credits, 0) / (BURN_SAMPLE_MS / HOUR);
@@ -332,7 +332,6 @@ export function computeStatus(db: Db, cfg: Config, now = Date.now()): Status {
 
   const queued = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued','deferred')").get() as { n: number }).n;
 
-  const plan = resolvePlan(cfg);
 
   return {
     now,

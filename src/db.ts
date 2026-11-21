@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { dataDir } from './config.ts';
 import { creditsFor } from './meter/weights.ts';
+import { ensureCodexSchema } from './codex/store.ts';
 
 export type Db = DatabaseSync;
 
@@ -152,6 +153,8 @@ export function openDb(path?: string): Db {
   addMissingColumns(db);
   dropSyntheticEvents(db);
   repriceEvents(db);
+  // Codex's tables, and their own reprice: see src/codex/store.ts.
+  ensureCodexSchema(db);
   if (!path) cached = db;
   return db;
 }

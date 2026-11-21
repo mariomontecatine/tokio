@@ -1,7 +1,7 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { access, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { claudeDirs, type Config } from './config.ts';
-import { resolvePlan, type PlanBasis } from './plans/detect.ts';
+import { claudeDirsAsync, type Config } from './config.ts';
+import { resolvePlanAsync, type PlanBasis } from './plans/detect.ts';
 import type { Discovery } from './claudeCli.ts';
 
 /**
@@ -67,17 +67,17 @@ export interface Reach {
  * trip, and this runs on a request. The question being answered is "is there
  * anything here at all", which the top level answers.
  */
-function countProjects(dir: string): number {
+async function countProjects(dir: string): Promise<number> {
   try {
-    return readdirSync(join(dir, 'projects'), { withFileTypes: true })
+    return (await readdir(join(dir, 'projects'), { withFileTypes: true }))
       .filter((e) => e.isDirectory()).length;
   } catch {
     return 0;
   }
 }
 
-export function computeReach(cfg: Config, how: Reach['claude']['how']): Reach {
-  const plan = resolvePlan(cfg);
+export async function computeReach(cfg: Config, how: Reach['claude']['how']): Promise<Reach> {
+  const plan = await resolvePlanAsync(cfg);
   const launched = (cfg.claudeLauncher ?? []).length > 0;
 
   return {
@@ -86,14 +86,14 @@ export function computeReach(cfg: Config, how: Reach['claude']['how']): Reach {
       bin: how === 'unknown' ? null : cfg.claudeBin,
       launched,
     },
-    transcripts: claudeDirs(cfg).map((dir) => ({
+    transcripts: await Promise.all((await claudeDirsAsync(cfg)).map(async (dir) => ({
       dir,
-      exists: existsSync(dir),
-      projects: countProjects(dir),
+      exists: await access(dir).then(() => true, () => false),
+      projects: await countProjects(dir),
       // A UNC path is another filesystem: on Windows that is the WSL bridge,
       // which is both slower and a sign that the CLI lives on the far side.
       remote: /^\\\\/.test(dir),
-    })),
+    }))),
     plan: { id: plan.basis === 'unknown' ? null : plan.plan, basis: plan.basis },
   };
 }

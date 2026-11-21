@@ -30,6 +30,8 @@ export function Queue({ jobs, status, onChange, t }: Props) {
   const [open, setOpen] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const reasons = new Map(status.decisions.map((d) => [d.id, d.reason]));
+  // Whose job it is only needs saying when there is more than one agent.
+  const dual = Boolean(status.providers?.claude && status.providers?.codex);
 
   const visible = jobs.filter((job) => (showDone ? true : ACTIVE.has(job.status)));
   const waiting = jobs.filter((job) => ACTIVE.has(job.status)).length;
@@ -59,7 +61,12 @@ export function Queue({ jobs, status, onChange, t }: Props) {
         <ul className="jobs">
           {visible.map((job) => {
             const expanded = open === job.id;
-            const cost = job.actualCredits != null ? money(job.actualCredits) : `~${money(job.estimateP50 ?? 0)}`;
+            const codexJob = job.provider === 'codex';
+            // A job with no estimate shows none. "~$0.00" would be an invented
+            // price for a Codex job, which has no price to estimate from.
+            const cost = job.actualCredits != null
+              ? money(job.actualCredits)
+              : job.estimateP50 != null ? `~${money(job.estimateP50)}` : '—';
             return (
               <li key={job.id} className={`job${expanded ? ' open' : ''}`}>
                 <button
@@ -72,6 +79,11 @@ export function Queue({ jobs, status, onChange, t }: Props) {
                 >
                   <span className={`dot ${job.status}`} aria-hidden="true" />
                   <span className="job-chevron" aria-hidden="true" />
+                  {dual && (
+                    <span className={`job-agent brand-${codexJob ? 'codex' : 'claude'}`} title={t(codexJob ? 'provider.codex' : 'provider.claude')}>
+                      {t(codexJob ? 'provider.codex' : 'provider.claude')}
+                    </span>
+                  )}
                   <span className="job-prompt">{summarize(job.prompt, job.promptBlocks)}</span>
                   <span className="job-cost">{cost}</span>
                 </button>
@@ -96,8 +108,14 @@ export function Queue({ jobs, status, onChange, t }: Props) {
                         <dd>{job.status}{job.resumeSessionId ? ' · continues a session' : ''}{job.safety === 'full' ? ' · unrestricted' : ''}</dd>
                       </div>
                       <div>
-                        <dt>{job.actualCredits != null ? t('queue.spent') : t('queue.upTo', { amount: money(job.estimateP90 ?? 0) })}</dt>
-                        <dd>{job.estimateBasis ?? '—'}</dd>
+                        <dt>
+                          {job.actualCredits != null
+                            ? t('queue.spent')
+                            : job.estimateP90 != null
+                              ? t('queue.upTo', { amount: money(job.estimateP90) })
+                              : t('queue.noEstimate')}
+                        </dt>
+                        <dd>{job.estimateBasis ?? (codexJob ? t('queue.codex.basis') : '—')}</dd>
                       </div>
                     </dl>
                     {job.status !== 'done' && reasons.has(job.id) && <p className="job-reason">{reasons.get(job.id)}</p>}

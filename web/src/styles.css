@@ -1283,3 +1283,130 @@ body:has([data-app="win32"]) {
   stroke-dasharray: 3 4;
   opacity: 0.4;
 }
+
+/* ==========================================================================
+   Agents: one pair of rings per agent
+   --------------------------------------------------------------------------
+   The brand is only ever the ground a ring runs on — its track, the dot by its
+   label. The arc stays in the state colours, because the arc is the message:
+   amber means close whoever's window it is. Claude's orange is a brand colour
+   and the same in both themes; Codex's is the app's own ink, so it is white on
+   the dark ground and near-black on the light one rather than a white that
+   vanishes in daylight. Everything else here is tokens, so a change of palette
+   carries it along.
+
+   Measured, not assumed — WCAG contrast of the solid arc against the track it
+   runs over, composited on `--ground`. Against Claude's orange, `--tight` (the
+   amber nearest it in hue) is 6.8:1 dark and 3.8:1 light; the weakest solid
+   pair anywhere is `--ease` on the light theme, 3.5:1 over Claude's track and
+   3.4:1 over Codex's. All clear the 3:1 a graphic needs. The faint projection
+   arc (tone at 0.26 over the track) lands within 0.1 of what it was over the
+   old hairline track: 1.4–1.8:1, as faint as it always was by design.
+   ========================================================================== */
+
+:root {
+  --brand-claude: #d97757;
+  --brand-codex: var(--ink);
+  --track-claude: color-mix(in srgb, var(--brand-claude) 32%, transparent);
+  --track-codex: color-mix(in srgb, var(--brand-codex) 16%, transparent);
+}
+
+.brand-claude { --brand: var(--brand-claude); }
+.brand-codex { --brand: var(--brand-codex); }
+
+.ring.brand-claude .ring-track { stroke: var(--track-claude); }
+.ring.brand-codex .ring-track { stroke: var(--track-codex); }
+.ring-unknown .ring-pct { color: var(--ink-faint); font-weight: 300; }
+
+.provider-groups { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.provider-group { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+
+.provider-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.provider-dot {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--brand);
+}
+
+/* Both agents: the pairs side by side, Claude's strip under them. */
+.state.dual { grid-template-columns: 1fr; gap: 30px; }
+.state.dual .provider-groups { flex-direction: row; flex-wrap: wrap; gap: 26px 56px; }
+/* Codex alone has no strip to sit beside. */
+.state.solo { grid-template-columns: 1fr; }
+
+/* Codex's sentence under Claude's, as one paragraph's second line. */
+.verdict:has(+ .verdict-second) { margin-bottom: 10px; padding-bottom: 0; border-bottom: 0; }
+.verdict-second { font-size: 16px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.verdict-second .quiet { font-size: 14px; }
+
+/* ---------- which AI ---------- */
+
+.picker {
+  margin: 4px 0 26px;
+  padding: 18px 20px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.picker h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.picker-help { margin: 0 0 14px; max-width: 64ch; font-size: 13px; color: var(--ink-dim); }
+.picker-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.picker-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 11px;
+  row-gap: 3px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color 200ms var(--swift);
+}
+.picker-option.on { border-color: color-mix(in srgb, var(--brand) 55%, var(--hairline)); }
+.picker-option input { grid-row: 1 / span 2; width: 15px; height: 15px; margin: 0; accent-color: var(--brand); }
+.picker-name { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; }
+.picker-found {
+  grid-column: 2;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+.picker-bar { display: flex; align-items: center; gap: 14px; margin-top: 14px; font-size: 12.5px; }
+.picker .bad, .facts dd.bad { color: var(--over); }
+
+/* ---------- compose and queue ---------- */
+
+.compose .compose-agent { border-color: color-mix(in srgb, var(--brand) 45%, var(--hairline)); }
+
+.job-agent {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--brand) 50%, var(--hairline));
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+@media (max-width: 760px) {
+  .state.dual .provider-groups { flex-direction: column; gap: 22px; }
+  .provider-group { align-items: stretch; }
+}

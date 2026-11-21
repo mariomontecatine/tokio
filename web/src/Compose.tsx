@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { composeTarget, dashboardProviders } from './providers';
 import { api, type Project, type Session, type Status } from './api';
 import type { Translate } from './i18n';
 import { Expand } from './Expand';
@@ -58,45 +59,68 @@ function remember(key: string, value: string): void {
  * with numbers nobody asked for.
  */
 export function Compose({ status, onQueued, t }: Props) {
+  const on = dashboardProviders(status.providers);
+  // Which agent runs it. Offered only when both are in use; otherwise it is
+  // whichever one is, and nothing on screen asks.
+  const [chosen, setChosen] = useState<string>(() => remembered('provider') ?? 'claude-code');
+  const provider = !on.codex ? 'claude-code' : !on.claude ? 'codex' : chosen === 'codex' ? 'codex' : 'claude-code';
+  const codex = provider === 'codex';
+  // Each agent remembers its own folder and session: a Codex thread is not a
+  // Claude session, and the same folder can have both.
+  const key = (name: string) => (codex ? `codex.${name}` : name);
+
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [cwd, setCwd] = useState('');
-  const [model, setModel] = useState('');
+  const [folder, setFolder] = useState({ provider, path: '' });
+  const setCwd = (path: string) => setFolder({ provider, path });
+  const [modelChoice, setModelChoice] = useState({ provider, name: '' });
+  const setModel = (name: string) => setModelChoice({ provider, name });
   const [safety, setSafety] = useState('edits');
   const [when, setWhen] = useState('on-reset');
   // Defaults to an hour out, so choosing "at a time" never starts on a moment
   // that has already gone.
   const [runAt, setRunAt] = useState(() => toLocalInput(Date.now() + 3_600_000));
-  const [resume, setResume] = useState('');
+  const [thread, setThread] = useState({ provider, cwd: '', id: '' });
+  const { cwd, model, resume } = composeTarget(provider, folder, modelChoice, thread);
+  const setResume = (id: string) => setThread({ provider, cwd, id });
   const [showOptions, setShowOptions] = useState(false);
   const [forecast, setForecast] = useState<Forecast | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The folder list is the agent's own: where Claude Code has transcripts, or
+  // where Codex has threads. Switching agents re-reads it and re-picks a folder.
   useEffect(() => {
-    void api.projects().then((list) => {
+    let cancelled = false;
+    setProjects([]);
+    void api.projects(provider).then((list) => {
+      if (cancelled) return;
       setProjects(list);
-      setCwd((current) => {
-        if (current) return current;
-        const saved = remembered('cwd');
-        if (saved && list.some((p) => p.path === saved)) return saved;
-        return list[0]?.path ?? '';
-      });
+      const saved = remembered(key('cwd'));
+      setCwd(saved && list.some((p) => p.path === saved) ? saved : list[0]?.path ?? '');
+    }).catch(() => {
+      if (!cancelled) setProjects([]);
     });
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+    // `key` follows `provider`, which is the dependency that matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider]);
 
   // The session you were last continuing is remembered per folder, because
   // "the last session" only means anything inside one project.
   useEffect(() => {
+    setSessions([]);
     if (!cwd) return;
     let cancelled = false;
     void api
-      .sessions(cwd)
+      .sessions(cwd, provider)
       .then((list) => {
         if (cancelled) return;
         setSessions(list);
-        const saved = remembered(`session:${cwd}`);
+        const saved = remembered(key(`session:${cwd}`));
         setResume(saved && list.some((s) => s.sessionId === saved) ? saved : '');
       })
       .catch(() => {
@@ -107,16 +131,28 @@ export function Compose({ status, onQueued, t }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [cwd]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cwd, provider]);
+
+  function chooseProvider(next: string) {
+    setChosen(next);
+    remember('provider', next);
+    // A model name belongs to one agent; carrying it across would hand Codex
+    // "opus".
+    setCwd('');
+    setResume('');
+    setModel('');
+    setForecast(null);
+  }
 
   function chooseCwd(next: string) {
     setCwd(next);
-    remember('cwd', next);
+    remember(key('cwd'), next);
   }
 
   function chooseResume(next: string) {
     setResume(next);
-    remember(`session:${cwd}`, next);
+    remember(key(`session:${cwd}`), next);
   }
 
   // The whole prompt, folded blocks and all — which is what the estimate is
@@ -125,7 +161,8 @@ export function Compose({ status, onQueued, t }: Props) {
   const ready = fullPrompt.length > 0;
 
   useEffect(() => {
-    if (!cwd || !ready) {
+    // Codex has no dollar estimate to ask for; the line below says why instead.
+    if (!cwd || !ready || codex) {
       setForecast(null);
       return;
     }
@@ -136,24 +173,26 @@ export function Compose({ status, onQueued, t }: Props) {
         .catch(() => setForecast(null));
     }, 400);
     return () => clearTimeout(id);
-  }, [fullPrompt, ready, cwd, model, safety, resume]);
+  }, [fullPrompt, ready, cwd, model, safety, resume, codex]);
 
   const afterPct = useMemo(() => {
-    if (!forecast || !forecast.blockCap) return null;
+    if (!forecast || !forecast.blockCap || forecast.afterP50 === null) return null;
     return (forecast.afterP50 / forecast.blockCap) * 100;
   }, [forecast]);
 
-  const tight = Boolean(forecast && forecast.afterP90 <= 0);
+  const tight = Boolean(forecast && forecast.afterP90 !== null && forecast.afterP90 <= 0);
+  const codexUsed = status.codex?.session?.usedPct ?? null;
 
   const scheduledFor = when === 'at' ? Date.parse(runAt) : null;
   const schedulePassed = scheduledFor !== null && (!Number.isFinite(scheduledFor) || scheduledFor <= Date.now());
 
   async function submit() {
-    if (!ready || busy || schedulePassed) return;
+    if (!cwd || !ready || busy || schedulePassed) return;
     setBusy(true);
     setError(null);
     try {
       await api.queue({
+        provider,
         prompt: fullPrompt,
         promptBlocks: draft.pasted.map((p) => p.text),
         cwd,
@@ -196,6 +235,17 @@ export function Compose({ status, onQueued, t }: Props) {
       />
 
       <div className="compose-bar">
+        {on.claude && on.codex && (
+          <select
+            className={`compose-agent brand-${codex ? 'codex' : 'claude'}`}
+            value={provider}
+            onChange={(e) => chooseProvider(e.target.value)}
+            aria-label={t('compose.agent')}
+          >
+            <option value="claude-code">{t('provider.claude')}</option>
+            <option value="codex">{t('provider.codex')}</option>
+          </select>
+        )}
         <select value={cwd} onChange={(e) => chooseCwd(e.target.value)} aria-label="Folder">
           {projects.map((p) => (
             <option key={p.path} value={p.path}>{projectName(p.path)}</option>
@@ -211,7 +261,7 @@ export function Compose({ status, onQueued, t }: Props) {
           {showOptions ? t('compose.hideOptions') : t('compose.options')}
         </button>
         <div className="spacer" />
-        <button className="btn" onClick={submit} disabled={!ready || busy || schedulePassed}>
+        <button className="btn" onClick={submit} disabled={!cwd || !ready || busy || schedulePassed}>
           {busy ? t('compose.submitting') : t('compose.submit')}
         </button>
       </div>
@@ -219,10 +269,19 @@ export function Compose({ status, onQueued, t }: Props) {
       <Expand open={showOptions}>
         <div className="compose-options">
           <select value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model">
-            <option value="">{t('compose.defaultModel')}</option>
-            <option value="opus">opus</option>
-            <option value="sonnet">sonnet</option>
-            <option value="haiku">haiku</option>
+            {codex ? (
+              <>
+                <option value="">{t('compose.defaultModel.codex')}</option>
+                {(status.codex?.models ?? []).map((m) => <option key={m} value={m}>{m}</option>)}
+              </>
+            ) : (
+              <>
+                <option value="">{t('compose.defaultModel')}</option>
+                <option value="opus">opus</option>
+                <option value="sonnet">sonnet</option>
+                <option value="haiku">haiku</option>
+              </>
+            )}
           </select>
           <select value={safety} onChange={(e) => setSafety(e.target.value)} aria-label="Permissions">
             {SAFETY.map((s) => <option key={s} value={s}>{t(`compose.safety.${s}`)}</option>)}
@@ -249,12 +308,18 @@ export function Compose({ status, onQueued, t }: Props) {
         </div>
       </Expand>
 
-      <Expand open={Boolean(error) || Boolean(ready && forecast)}>
+      <Expand open={Boolean(error) || Boolean(ready && (forecast || codex))}>
         {error ? (
           <p className="compose-forecast bad">{error}</p>
+        ) : codex ? (
+          <p className="compose-forecast">
+            {codexUsed === null
+              ? t('compose.codex.forecast.none')
+              : t('compose.codex.forecast', { pct: pct(codexUsed) })}
+          </p>
         ) : (
           <p className={`compose-forecast${tight ? ' bad' : ''}`}>
-            {forecast &&
+            {forecast && forecast.estimate &&
               (tight
                 ? t('compose.forecastTight', {
                     p50: money(forecast.estimate.p50),

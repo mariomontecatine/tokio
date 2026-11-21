@@ -1,18 +1,23 @@
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import { openDb } from './db.ts';
-import { claudeDir, loadConfig, saveConfig, type Config } from './config.ts';
+import { claudeDir, loadConfigAsync, saveConfigAsync, type Config } from './config.ts';
 import { Ingestor } from './ingest/index.ts';
 import { Scheduler } from './queue/scheduler.ts';
 import { createClaudeCodeProvider } from './providers/claudeCode.ts';
 import { createServer } from './server/index.ts';
 import { computeStatus, isRealReset } from './meter/index.ts';
+import { resolvePlanAsync } from './plans/detect.ts';
 import { rememberReading } from './plans/calibrate.ts';
 import { notify } from './notify/index.ts';
 import { nextProbeDelay, probeUsage } from './usage/probe.ts';
 import { dashboardUrl, isLoopback, onWsl } from './net.ts';
 import { saveProbe, pruneProbes } from './usage/store.ts';
 import { resolveClaudeAsync } from './claudeCli.ts';
+import { resolveCodex } from './codex/cli.ts';
+import { CodexService } from './codex/service.ts';
+import { createCodexProvider } from './providers/codex.ts';
+import { detectAgents, effectiveProviders } from './agents.ts';
 
 export interface DaemonOptions {
   host?: string;
@@ -25,7 +30,7 @@ export async function startDaemon(options: DaemonOptions = {}) {
   // was going to be spawned anyway; it earns its place on Windows, where a bare
   // name finds nothing without PATHEXT and the npm shim cannot be spawned
   // without a command processor in front of it.
-  const found = await resolveClaudeAsync(loadConfig());
+  const found = await resolveClaudeAsync(await loadConfigAsync());
   const cfg: Config = found.cfg;
   if (found.how === 'unknown') {
     console.error('tokio: warning — no Claude Code found on PATH' + (process.platform === 'win32' ? ' or in WSL' : '') + '. Set claudeBin in the config.');
@@ -34,6 +39,16 @@ export async function startDaemon(options: DaemonOptions = {}) {
     // when the numbers look wrong, and it is not one they can guess.
     console.log(`tokio: using Claude Code inside WSL (${cfg.claudeBin})`);
   }
+
+  // Codex the same way: a configured binary wins, otherwise PATH and then the
+  // usual install directories, since an application opened from the Finder
+  // inherits almost no PATH at all. Then what is on this machine, which decides
+  // what is shown until the person has said which agents they use.
+  const codexFound = await resolveCodex(cfg);
+  cfg.codexBin = codexFound.cfg.codexBin;
+  cfg.codexLauncher = codexFound.cfg.codexLauncher;
+  const agents = await detectAgents(cfg);
+  const providersNow = () => effectiveProviders(cfg, agents);
 
   // Reading transcripts across the WSL boundary works and is slow, and slow in a
   // way nobody would attribute to the right cause. 9p charges a round trip per
@@ -56,14 +71,15 @@ export async function startDaemon(options: DaemonOptions = {}) {
   // carries it.
   if (!isLoopback(cfg.host) && !cfg.token) {
     cfg.token = randomBytes(16).toString('hex');
-    saveConfig(cfg);
+    await saveConfigAsync(cfg);
     console.log('tokio: generated an access token for non-local access (saved to your config)');
   }
 
   const db = openDb();
   const provider = createClaudeCodeProvider(cfg);
   const availability = await provider.available();
-  if (!availability.ok) console.error(`tokio: warning — ${availability.reason}`);
+  if (providersNow().claude && !availability.ok) console.error(`tokio: warning — ${availability.reason}`);
+  const codexProvider = createCodexProvider(cfg);
 
   const bus = new EventEmitter();
   bus.setMaxListeners(0);
@@ -73,7 +89,13 @@ export async function startDaemon(options: DaemonOptions = {}) {
   };
 
   const ingestor = new Ingestor(db, cfg);
-  const scheduler = new Scheduler(db, cfg, provider);
+  // Both providers are always there to run a job; whether a Codex job is
+  // offered and metered is what the providers setting decides.
+  const scheduler = new Scheduler(db, cfg, [provider, codexProvider], () => providersNow());
+  const codex = new CodexService(db, cfg, () => {
+    bus.emit('change');
+    void scheduler.tick();
+  });
 
   let lastUsageAt: number | null = null;
   ingestor.on('usage', () => {
@@ -108,7 +130,7 @@ export async function startDaemon(options: DaemonOptions = {}) {
     }
     // Every usable reading also pins the cap, so the shipped guesses stop being
     // consulted after the first busy window. See plans/calibrate.ts.
-    const status = computeStatus(db, cfg);
+    const status = computeStatus(db, cfg, Date.now(), await resolvePlanAsync(cfg));
     rememberReading(db, 'block', probe.sessionPct, status.block.window.credits);
     rememberReading(db, 'week', probe.weekPct, status.week.window.credits);
     bus.emit('change');
@@ -119,11 +141,15 @@ export async function startDaemon(options: DaemonOptions = {}) {
   // is chosen after each one, from what the last one said and what the queue is
   // waiting for.
   let poller: NodeJS.Timeout | null = null;
+  // Off while Claude is switched off: a daemon told someone does not use Claude
+  // Code should not spawn it every few minutes to ask.
+  let claudePolling = false;
   const pollAgain = (probe: { sessionResetsAt: number | null }) => {
     // One chain, always. A reset triggers its own read, and without this that
     // read would start a second chain alongside the first — a daemon that has
     // been up a week would be polling a dozen times over.
     if (poller) clearTimeout(poller);
+    if (!claudePolling) return;
     const now = Date.now();
     const queued = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('queued','deferred')").get() as { n: number }).n;
     const delay = nextProbeDelay({ now, baseMs: cfg.usagePollMs, lastUsageAt, queued, resetsAt: probe.sessionResetsAt });
@@ -148,7 +174,36 @@ export async function startDaemon(options: DaemonOptions = {}) {
    * the window and their results arrive as changes, which is what the stream is
    * for.
    */
-  const app = await createServer({ db, cfg, scheduler, onChange, refresh, claudeHow: found.how });
+  const startClaudePolling = async () => {
+    if (claudePolling) return;
+    claudePolling = true;
+    const first = await refresh();
+    if (first.error) console.error(`tokio: warning — ${first.error}`);
+    pollAgain(first);
+  };
+
+  /** Start or stop each agent's half to match the providers setting. Idempotent. */
+  const applyProviders = async () => {
+    const p = providersNow();
+    if (!p.claude) {
+      claudePolling = false;
+      if (poller) clearTimeout(poller);
+      poller = null;
+    }
+    await Promise.all([
+      p.claude ? startClaudePolling() : Promise.resolve(),
+      p.codex ? codex.start() : codex.stop(),
+    ]);
+    bus.emit('change');
+  };
+
+  const app = await createServer({
+    db, cfg, scheduler, onChange, refresh, claudeHow: found.how,
+    codexHow: codexFound.how,
+    agents,
+    refreshCodex: () => codex.refresh(),
+    onProvidersChanged: () => void applyProviders().catch((err) => console.error(`tokio: warning — ${err?.message ?? err}`)),
+  });
   await app.listen({ host: cfg.host, port: cfg.port });
 
   const url = dashboardUrl(cfg);
@@ -159,30 +214,34 @@ export async function startDaemon(options: DaemonOptions = {}) {
     await ingestor.start();
     scheduler.start();
 
-    const first = await refresh();
-    if (first.error) console.error(`tokio: warning — ${first.error}`);
-    pollAgain(first);
+    // Claude's first probe and Codex's first read, for whichever are on.
+    await applyProviders();
 
     // A reset is the one moment queued work becomes runnable, so it starts the
     // job, reads the real numbers again and says so — rather than waiting for
     // whichever timer happened to be next.
     watchForReset(db, cfg, bus, () => {
       void scheduler.tick();
-      void refresh().then(pollAgain);
+      if (claudePolling) void refresh().then(pollAgain);
     });
 
     // Printed here rather than beside the listening line: before the first
     // probe the only honest figure is none, and a 0% that turns into 54% two
     // seconds later is worse than a line that arrives late.
-    const status = computeStatus(db, cfg);
-    console.log(`  5h window: ${status.block.usedPct.toFixed(0)}% used (${status.block.source}), resets ${new Date(status.block.resetsAt).toLocaleTimeString()}`);
+    const status = computeStatus(db, cfg, Date.now(), await resolvePlanAsync(cfg));
+    if (providersNow().claude) {
+      console.log(`  5h window: ${status.block.usedPct.toFixed(0)}% used (${status.block.source}), resets ${new Date(status.block.resetsAt).toLocaleTimeString()}`);
+    }
+    if (codex.running) console.log(`  Codex: ${codexFound.how === 'unknown' ? 'CLI not found' : cfg.codexBin}`);
     console.log(`  queue: ${status.queued} job(s)`);
   })();
   // Surfaced rather than swallowed: this is where the daemon's real work is now.
   void warmUp.catch((err) => console.error(`tokio: warning — start-up: ${err?.message ?? err}`));
 
   const shutdown = async () => {
+    claudePolling = false;
     if (poller) clearTimeout(poller);
+    await codex.stop();
     await ingestor.stop();
     scheduler.stop();
     await app.close();

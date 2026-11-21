@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type Reach as ReachFacts } from './api';
-import type { Translate } from './i18n';
+import type { Lang, Translate } from './i18n';
+import { readOnDate } from './Codex';
 
 /**
  * What these numbers can see, said once, in the interface.
@@ -16,7 +17,7 @@ import type { Translate } from './i18n';
  * to is the failure this project cares about most, so it is said on the first
  * run and then kept one click away rather than repeated forever.
  */
-export function Reach({ t, onDismiss }: { t: Translate; onDismiss?: () => void }) {
+export function Reach({ t, lang, onDismiss }: { t: Translate; lang: Lang; onDismiss?: () => void }) {
   const [facts, setFacts] = useState<ReachFacts | null>(null);
 
   useEffect(() => {
@@ -27,7 +28,8 @@ export function Reach({ t, onDismiss }: { t: Translate; onDismiss?: () => void }
 
   if (!facts) return null;
 
-  const { claude, transcripts, plan } = facts;
+  const { claude, transcripts, plan, codex } = facts;
+  const showClaude = facts.providers?.claude ?? true;
 
   // A missing plan or a missing CLI is a limit on what can be shown, not a
   // failure to report — so they are stated in the same voice as the rest.
@@ -47,19 +49,37 @@ export function Reach({ t, onDismiss }: { t: Translate; onDismiss?: () => void }
     <section className="reach">
       <h2>{t('reach.title')}</h2>
       <ul>
-        <li>{t('reach.gauges')}</li>
-        <li>{t('reach.priced.local')}</li>
-        <li>{claudeLine}</li>
-        {transcripts.map((where) => (
-          <li key={where.dir}>
-            {where.exists && where.projects > 0
-              ? t('reach.transcripts', { dir: where.dir, count: String(where.projects) })
-              : t('reach.transcripts.none', { dir: where.dir })}
-            {where.remote && <> {t('reach.transcripts.remote')}</>}
-          </li>
-        ))}
-        {transcripts.length > 1 && <li>{t('reach.transcripts.both')}</li>}
-        <li>{planLine}</li>
+        {showClaude && (
+          <>
+            <li>{t('reach.gauges')}</li>
+            <li>{t('reach.priced.local')}</li>
+            <li>{claudeLine}</li>
+            {transcripts.map((where) => (
+              <li key={where.dir}>
+                {where.exists && where.projects > 0
+                  ? t('reach.transcripts', { dir: where.dir, count: String(where.projects) })
+                  : t('reach.transcripts.none', { dir: where.dir })}
+                {where.remote && <> {t('reach.transcripts.remote')}</>}
+              </li>
+            ))}
+            {transcripts.length > 1 && <li>{t('reach.transcripts.both')}</li>}
+            <li>{planLine}</li>
+          </>
+        )}
+        {codex && (
+          <>
+            <li>{t('reach.codex.gauges')}</li>
+            <li>{codex.how === 'unknown' ? t('reach.codex.unknown') : t('reach.codex.found', { bin: codex.bin ?? '' })}</li>
+            <li>
+              {codex.homeExists
+                ? t('reach.codex.threads', { home: codex.home, count: String(codex.threads) })
+                : t('reach.codex.none', { home: codex.home })}
+            </li>
+            {codex.priced && codex.pricesReadOn
+              ? <li>{t('reach.codex.priced', { date: readOnDate(codex.pricesReadOn, lang) })}</li>
+              : <li>{t('reach.codex.tokens')}</li>}
+          </>
+        )}
       </ul>
       {onDismiss && (
         <button className="act" onClick={onDismiss}>{t('reach.dismiss')}</button>

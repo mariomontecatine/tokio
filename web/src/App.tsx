@@ -17,14 +17,20 @@ import { WindowControls } from './WindowControls';
 import { Wordmark } from './Wordmark';
 import { useLang, localeOf, type Lang, type Translate } from './i18n';
 import { startSmoothScroll } from './smoothScroll';
+import { CodexDetails, CodexRings, ProviderLabel, ProviderPicker } from './Codex';
+import { dashboardProviders } from './providers';
+import { readCodexVerdict } from './codexVerdict';
 
 /** "10 sep" — enough to place a reset without spelling out a whole date. */
 const dayMonth = (at: number, lang: Lang): string =>
   new Date(at).toLocaleDateString(localeOf(lang), { day: 'numeric', month: 'short' }).replace('.', '');
 
 /** Everything true but not urgent. Present, one click away, never in the way. */
-function Details({ status, t, lang, onRefresh }: { status: Status; t: Translate; lang: Lang; onRefresh: () => void }) {
+function Details({ status, t, lang, onRefresh, onChooseAgents }: {
+  status: Status; t: Translate; lang: Lang; onRefresh: () => void; onChooseAgents: () => void;
+}) {
   const [busy, setBusy] = useState(false);
+  const on = dashboardProviders(status.providers);
   const reported = status.block.source === 'reported';
   const age = status.probe ? Math.round(status.probe.ageMs / 1000) : null;
   const ageLabel = age === null ? '—' : age < 90 ? `${age}s` : `${Math.round(age / 60)}m`;
@@ -42,6 +48,18 @@ function Details({ status, t, lang, onRefresh }: { status: Status; t: Translate;
 
   return (
     <div className="details">
+      <dl className="facts">
+        <div>
+          <dt>{t('agents.detail')}</dt>
+          <dd>
+            {[on.claude && t('provider.claude'), on.codex && t('provider.codex')].filter(Boolean).join(' · ')}
+            {' '}
+            {on.canChoose && <button className="link" onClick={onChooseAgents}>{t('agents.change')}</button>}
+          </dd>
+        </div>
+        {status.codex && <CodexDetails codex={status.codex} t={t} lang={lang} />}
+      </dl>
+      {on.claude && (
       <dl className="facts">
         <div>
           <dt>{t('detail.source')}</dt>
@@ -130,9 +148,10 @@ function Details({ status, t, lang, onRefresh }: { status: Status; t: Translate;
           </div>
         )}
       </dl>
+      )}
       {/* Not a footnote for its own sake: every figure above is a counterfactual
           at list prices, and the page should never let that be forgotten. */}
-      <p className="details-note">{t('detail.prices')}</p>
+      {on.claude && <p className="details-note">{t('detail.prices')}</p>}
     </div>
   );
 }
@@ -245,6 +264,8 @@ export default function App() {
   const { status, jobs, live, error, refresh } = useDashboard();
   const { lang, setLang, t } = useLang();
   const [showDetails, setShowDetails] = useState(false);
+  // Reopening the which-AI question from Details, after the first answer.
+  const [choosing, setChoosing] = useState(false);
   // Said once, on the first run, then folded into Details. A limitation worth
   // stating is not worth repeating every morning, and localStorage is the right
   // weight for it: losing the flag shows the panel again, which is harmless.
@@ -282,6 +303,11 @@ export default function App() {
   const verdict = readVerdict(status, t);
   const week = status.week;
   const bridge = desktop();
+  // An older daemon sends no providers: it only ever knew Claude.
+  const on = dashboardProviders(status.providers);
+  const codex = on.codex ? status.codex : null;
+  const codexVerdict = codex ? readCodexVerdict(codex, t) : null;
+  const dual = on.claude && Boolean(codex);
 
   return (
     <div className="shell">
@@ -297,7 +323,7 @@ export default function App() {
             and the menu bar — and a native window does not repeat its logo
             beside the traffic lights. */}
         {!bridge && <Wordmark />}
-        <span className="plan">{status.planLabel}</span>
+        {on.claude && <span className="plan">{status.planLabel}</span>}
         {live === false && <span className="stale">{t('error.stale')}</span>}
         <div className="spacer" />
         <Refresh t={t} onDone={refresh} />
@@ -320,58 +346,102 @@ export default function App() {
         {bridge && drawsOwnControls(bridge) && <WindowControls bridge={bridge} />}
       </header>
 
-      <section className={`state tone-${verdict.pressure}`}>
-        <div className="rings">
-          <Ring
-            usedPct={status.block.usedPct}
-            projectedPct={verdict.projectedPct}
-            pressure={verdict.pressure}
-            label={t('ring.session')}
-            sub={
-              <Countdown
-                at={status.block.resetsAt}
-                serverNow={status.now}
-                render={(remaining) => t('ring.resets.in', { until: remaining })}
-              />
-            }
-          />
-          <Ring
-            usedPct={week.usedPct}
-            label={t('ring.week')}
-            sub={
-              week.rolling
-                ? t('ring.rolling')
-                : t('ring.resets.at', { time: `${dayMonth(week.resetsAt, lang)} ${clock(week.resetsAt)}` })
-            }
-          />
+      {/* Asked once, before anything else, with what was found already ticked.
+          The page under it already shows those, so it is never empty while it asks. */}
+      {(!on.chosen || choosing) && (
+        <ProviderPicker
+          providers={on}
+          t={t}
+          onDone={() => { setChoosing(false); refresh(); }}
+          onCancel={on.chosen ? () => setChoosing(false) : undefined}
+        />
+      )}
+
+      {/* One pair of rings per agent, each under a small label in its colour,
+          on a track of that colour. With both, the pairs sit side by side and
+          Claude's strip runs under them; with Claude alone, beside it. */}
+      <section className={`state tone-${on.claude ? verdict.pressure : codexVerdict?.pressure ?? 'ease'}${dual ? ' dual' : ''}${on.claude ? '' : ' solo'}`}>
+        <div className="provider-groups">
+          {on.claude && (
+            <div className="provider-group brand-claude">
+              <ProviderLabel brand="claude" t={t} />
+              <div className="rings">
+                <Ring
+                  brand="claude"
+                  usedPct={status.block.usedPct}
+                  projectedPct={verdict.projectedPct}
+                  pressure={verdict.pressure}
+                  label={t('ring.session')}
+                  sub={
+                    <Countdown
+                      at={status.block.resetsAt}
+                      serverNow={status.now}
+                      render={(remaining) => t('ring.resets.in', { until: remaining })}
+                    />
+                  }
+                />
+                <Ring
+                  brand="claude"
+                  usedPct={week.usedPct}
+                  label={t('ring.week')}
+                  sub={
+                    week.rolling
+                      ? t('ring.rolling')
+                      : t('ring.resets.at', { time: `${dayMonth(week.resetsAt, lang)} ${clock(week.resetsAt)}` })
+                  }
+                />
+              </div>
+            </div>
+          )}
+          {codex && <CodexRings codex={codex} serverNow={status.now} t={t} lang={lang} />}
         </div>
 
-        <div className="pace">
-          {/* Not "did this machine do anything": a window used from the browser,
-              or from another laptop, is still a window, and Anthropic's reading
-              knows its height even though no transcript here does. The strip is
-              shown whenever there is a shape to draw. */}
-          {status.traceSource === 'reported' || status.block.window.events > 0 ? (
-            <WindowStrip status={status} t={t} />
-          ) : (
-            <p className="block-empty">{t('pace.idle')}</p>
-          )}
-        </div>
+        {on.claude && (
+          <div className="pace">
+            {/* Not "did this machine do anything": a window used from the browser,
+                or from another laptop, is still a window, and Anthropic's reading
+                knows its height even though no transcript here does. The strip is
+                shown whenever there is a shape to draw. */}
+            {status.traceSource === 'reported' || status.block.window.events > 0 ? (
+              <WindowStrip status={status} t={t} />
+            ) : (
+              <p className="block-empty">{t('pace.idle')}</p>
+            )}
+          </div>
+        )}
       </section>
 
-      <p className={`verdict tone-${verdict.pressure}`}>
-        {verdict.line}
-        {verdict.detail && <span className="quiet"> {verdict.detail}</span>}
-      </p>
+      {on.claude && (
+        <p className={`verdict tone-${verdict.pressure}`}>
+          {verdict.line}
+          {verdict.detail && <span className="quiet"> {verdict.detail}</span>}
+        </p>
+      )}
+      {/* Codex's own sentence: always when it is the only agent, and beside
+          Claude's only when it has something worth saying. */}
+      {codexVerdict && (!on.claude || codexVerdict.pressure !== 'ease' || !codex?.session) && (
+        <p className={`verdict tone-${codexVerdict.pressure}${on.claude ? ' verdict-second' : ''}`}>
+          {on.claude && <ProviderLabel brand="codex" t={t} />}
+          {codexVerdict.line}
+          {codexVerdict.detail && <span className="quiet"> {codexVerdict.detail}</span>}
+        </p>
+      )}
 
-      {!introduced && <Reach t={t} onDismiss={dismissReach} />}
+      {/* Keyed on the agents in use, so changing them re-reads what can be seen. */}
+      {!introduced && <Reach key={`${on.claude}${on.codex}`} t={t} lang={lang} onDismiss={dismissReach} />}
 
       <Expand open={showDetails}>
-        {introduced && <Reach t={t} />}
-        <Details status={status} t={t} lang={lang} onRefresh={refresh} />
+        {introduced && <Reach key={`${on.claude}${on.codex}`} t={t} lang={lang} />}
+        <Details
+          status={status}
+          t={t}
+          lang={lang}
+          onRefresh={refresh}
+          onChooseAgents={() => { setChoosing(true); window.scrollTo({ top: 0 }); }}
+        />
       </Expand>
 
-      <Calibration status={status} t={t} onDone={refresh} />
+      {on.claude && <Calibration status={status} t={t} onDone={refresh} />}
 
       <Reveal>
         <Queue jobs={jobs} status={status} onChange={refresh} t={t} />
@@ -383,9 +453,13 @@ export default function App() {
         </section>
       </Reveal>
 
-      <Reveal delay={120}>
-        <Worth value={status.value} t={t} lang={lang} />
-      </Reveal>
+      {/* The payback is Claude's: it prices Claude's transcripts against Claude's
+          plan. Codex has no price in here yet, so it has no payback to show. */}
+      {on.claude && (
+        <Reveal delay={120}>
+          <Worth value={status.value} t={t} lang={lang} />
+        </Reveal>
+      )}
     </div>
   );
 }

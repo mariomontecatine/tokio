@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -63,13 +64,16 @@ function beside(dir: string): string[] {
  * another would report numbers for an account nobody asked about. `beside` is
  * not that fallback — it stays within the installation that was pointed at.
  */
-function accountFile(cfg: Config): Account | null {
+function accountPaths(cfg: Config): string[] {
   const configured = cfg.claudeConfigDir || process.env.CLAUDE_CONFIG_DIR;
   const dir = claudeDir(cfg);
-  const candidates = configured
+  return configured
     ? [join(dir, '.claude.json'), ...beside(dir)]
     : [join(homedir(), '.claude.json'), join(dir, '.claude.json')];
-  for (const path of candidates) {
+}
+
+function accountFile(cfg: Config): Account | null {
+  for (const path of accountPaths(cfg)) {
     try {
       const parsed = JSON.parse(readFileSync(path, 'utf8'));
       const account = parsed?.oauthAccount;
@@ -83,7 +87,10 @@ function accountFile(cfg: Config): Account | null {
 }
 
 export function detectPlan(cfg: Config): DetectedPlan | null {
-  const account = accountFile(cfg);
+  return accountPlan(accountFile(cfg));
+}
+
+function accountPlan(account: Account | null): DetectedPlan | null {
   if (!account) return null;
 
   const type = String(account.organizationType ?? '').toLowerCase();
@@ -122,13 +129,25 @@ export interface ResolvedPlan {
  * needed the plan — but the price is withheld rather than invented, so no
  * payback figure is built on a plan the user never confirmed.
  */
-export function resolvePlan(cfg: Config): ResolvedPlan {
+export function resolvePlan(cfg: Config, detected?: DetectedPlan | null): ResolvedPlan {
   if (cfg.plan !== 'auto') return { plan: cfg.plan, basis: 'configured', evidence: null };
 
-  const found = detectPlan(cfg);
+  const found = detected === undefined ? detectPlan(cfg) : detected;
   if (found) return { plan: found.plan, basis: 'detected', evidence: found.evidence };
 
   // Something has to be drawn on the gauges before the first /usage reading.
   // Pro is the floor, so an unknown plan errs towards under-promising.
   return { plan: 'pro', basis: 'unknown', evidence: null };
+}
+
+export async function resolvePlanAsync(cfg: Config): Promise<ResolvedPlan> {
+  if (cfg.plan === 'auto') {
+    for (const path of accountPaths(cfg)) {
+      try {
+        const account = JSON.parse(await readFile(path, 'utf8'))?.oauthAccount;
+        if (account && typeof account === 'object') return resolvePlan(cfg, accountPlan(account));
+      } catch { /* try the other account location */ }
+    }
+  }
+  return resolvePlan(cfg, null);
 }

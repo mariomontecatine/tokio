@@ -22,8 +22,7 @@ export function planLabel(plan: PlanId): string {
  * replaced by calibration as soon as the user reads a real percentage off
  * Claude Code's own `/usage`.
  */
-export function defaultCap(cfg: Config, kind: WindowKind): number | null {
-  const { plan } = resolvePlan(cfg);
+export function defaultCap(cfg: Config, kind: WindowKind, plan = resolvePlan(cfg).plan): number | null {
   if (plan === 'custom' && cfg.customCaps) {
     return kind === 'block' ? cfg.customCaps.block : kind === 'week' ? cfg.customCaps.week : cfg.customCaps.weekOpus;
   }
@@ -66,8 +65,8 @@ function highAnchor(caps: number[]): number {
  * I'm at N%" against the spend we counted. Failing that, a limit we actually
  * hit is a hard lower bound, so the default is raised to meet it.
  */
-export function resolveCap(db: Db, cfg: Config, kind: WindowKind): Cap {
-  const fallback = defaultCap(cfg, kind) ?? 0;
+export function resolveCap(db: Db, cfg: Config, kind: WindowKind, plan = resolvePlan(cfg).plan): Cap {
+  const fallback = defaultCap(cfg, kind, plan) ?? 0;
   const since = Date.now() - ANCHOR_TTL_MS;
   const rows = db
     .prepare('SELECT impliedCap FROM anchors WHERE windowKind = ? AND ts >= ? ORDER BY impliedCap')

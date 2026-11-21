@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Config } from './config.ts';
 import { claudeDir } from './config.ts';
@@ -16,6 +17,17 @@ export function effectiveModel(cfg: Config): string | null {
   if (cfg.defaultModel) return cfg.defaultModel;
   try {
     const settings = JSON.parse(readFileSync(join(claudeDir(cfg), 'settings.json'), 'utf8'));
+    if (typeof settings.model === 'string' && settings.model) return settings.model;
+  } catch {
+    // No settings file, or not readable — fall through.
+  }
+  return null;
+}
+
+export async function effectiveModelAsync(cfg: Config): Promise<string | null> {
+  if (cfg.defaultModel) return cfg.defaultModel;
+  try {
+    const settings = JSON.parse(await readFile(join(claudeDir(cfg), 'settings.json'), 'utf8'));
     if (typeof settings.model === 'string' && settings.model) return settings.model;
   } catch {
     // No settings file, or not readable — fall through.

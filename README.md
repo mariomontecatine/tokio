@@ -39,6 +39,9 @@ answers it.
 - **A meter with the real numbers.** Not a reconstruction: `tokio` asks Claude Code's own
   `/usage` for the true percentage and the true reset time, then adds what only it can work out —
   your burn rate, and what a given request will cost before you commit to it.
+- **Claude Code and Codex, side by side.** If you also use OpenAI's Codex CLI, its two windows get
+  rings of their own, read from OpenAI through Codex itself, and the queue can run a prompt with
+  either. See [Codex](#codex).
 - **A running total of what the plan is worth.** Every response you've ever had, priced at list
   API rates, against what you actually pay. Most people are surprised.
 
@@ -77,7 +80,9 @@ npm link
 </details>
 
 There's nothing to configure and no account to make. `tokio` reads the transcripts Claude Code
-already writes to `~/.claude/projects/`, so your entire history is there on first run.
+already writes to `~/.claude/projects/` — and, if you use Codex, the sessions it writes to
+`~/.codex/sessions/` — so your entire history is there on first run. The first time the dashboard
+opens it asks which AI you use, with whatever it found on the machine already ticked.
 
 Then, when you hit the wall:
 
@@ -335,6 +340,79 @@ Three rules keep it honest:
 Nothing is sent anywhere; it is a read of a file you already have, and nothing but the plan is
 taken from it.
 
+## Codex
+
+`tokio` meters OpenAI's Codex CLI the same way it meters Claude Code, under the same rules. Each
+agent gets its own pair of rings — the five-hour window and the week — under a small label, on a
+track in its own colour: orange for Claude, the page's ink for Codex. The arcs keep the state
+colours, so amber still means close whoever's window it is.
+
+**Where the Codex percentage comes from.** From OpenAI, through Codex itself. `codex app-server`
+answers `account/rateLimits/read` over stdio with the same percentages and reset times its own
+usage screen shows. It calls no model, so it costs no tokens, and it is polled on the same beat
+as Claude's `/usage`. Codex authenticates with its own login, and `tokio` keeps only the numbers:
+the reply also carries an account id, which is not stored. The method is marked experimental by
+Codex. When it cannot be asked — an older CLI, an API-key login — the readings Codex writes into
+its own session files with every turn stand in. Those are OpenAI's too, but only as recent as
+your last Codex turn, and the dashboard says which of the two you are looking at.
+
+Three rules keep the Codex rings honest:
+
+- **A reading expires at the reset it announced.** Past it the ring shows a dash, not 0% and not
+  the old figure carried forward.
+- **There is no estimated Codex ring.** A Claude window can be reconstructed against a cap; there
+  is no cap for Codex to reconstruct against, so a window with no current reading is drawn empty.
+- **An old reading is marked as old.** Within a window the percentage only goes up, so an old one
+  can be behind but never above. The caption says how old it is.
+
+**What is counted.** Codex writes a `token_usage_record` for every model response, each with its
+own `response_id`. `tokio` counts those, one row per id, and never the running totals beside
+them. The model comes from the turn's `turn_context`, since a thread can switch models halfway.
+Input includes cached input and output includes reasoning, as OpenAI reports them. Codex rows live
+in tables of their own: nothing of Codex reaches Claude's window, cap, burn rate or payback.
+
+**And what it is priced at.** Codex carries no price table the way Claude Code does, so there is
+nothing to mirror. What OpenAI publishes is the API list price on each model's page, and
+[`src/codex/prices.ts`](src/codex/prices.ts) holds a copy of it, one row per model, each with the
+page it came from and the day it was read. Every Codex dollar figure says *at least*, and the
+dashboard says why:
+
+- **It is the API's Standard price, not your plan's.** It is what the same responses would have
+  cost on the API. That includes the API's surcharge on requests over 272K input tokens, which use
+  drawn from a subscription does not pay.
+- **Only Standard is priced.** Codex records each thread's service tier. A response that ran at
+  another tier, or with none recorded, stays in tokens; Fast, for one, costs twice as much. A model
+  with no row stays in tokens too.
+- **It is a floor.** Web search calls, cache writes and regional processing cost extra on the API,
+  and none of them is counted.
+- **A total is all or nothing.** When any response in a span has no price, the span shows no dollar
+  total and says how many held it back.
+
+The prices are copied by hand and never update themselves. None of the pages says since when its
+price applies, so each model's first row has no start date and covers its whole history until a
+later row. A real price change is a new row from its own date, so older responses keep the price
+they ran at. A row copied wrong is fixed. Either edit re-prices what is stored on the next start,
+each response at the row in force on its own date.
+
+**The queue.** A job can be given to either agent. A Codex job runs `codex exec --json` in the
+folder you chose, with the prompt on stdin, and can continue an existing Codex thread. Safety maps
+to Codex's sandbox: `plan` is `read-only`, `edits` is `workspace-write`, `full` is
+`danger-full-access`. Codex never stops to ask in this mode, so the sandbox is the whole of the
+leash.
+
+- **The sandbox is always passed.** Without it a resumed thread falls back to Codex's configured
+  default.
+- **It applies to resumed threads too.** That was checked against a throwaway Codex home, at zero
+  tokens.
+- **`--skip-git-repo-check` is not passed.** That safeguard is Codex's to lift.
+
+There is no dollar estimate for a Codex job, and a finished one gets no dollar cost of its own:
+what `codex exec` reports is a total for the run, while OpenAI prices each request apart. Its
+responses count in Codex's totals once they are read. So the rule for when one starts is the
+percentages OpenAI reports. The five-hour window must be below the reserve line, the week must not be full,
+and OpenAI must not have flagged the limit as reached. *When the window resets* means a Codex
+reset since you queued it.
+
 ### Where it runs
 
 | | Daemon and CLI | One-line install | Opens your browser | Desktop notifications |
@@ -351,11 +429,11 @@ Anything it cannot do, it says so and prints the URL instead of failing.
 Queued jobs run while you're not there. That's the whole point, and it's also the risk, so you
 choose the leash per job:
 
-| Mode | Flag | What it can do |
-|---|---|---|
-| `plan` | `--safety plan` | Reads and proposes. Changes nothing. |
-| `edits` | `--safety edits` | Edits files and runs tools without asking. **Default.** |
-| `full` | `--safety full` | No restrictions at all, in that directory. |
+| Mode | Flag | What it can do | Codex sandbox |
+|---|---|---|---|
+| `plan` | `--safety plan` | Reads and proposes. Changes nothing. | `read-only` |
+| `edits` | `--safety edits` | Edits files and runs tools without asking. **Default.** | `workspace-write` |
+| `full` | `--safety full` | No restrictions at all, in that directory. | `danger-full-access` |
 
 Two habits worth having: queue unattended work onto a branch you don't mind rewinding, and keep
 `plan` for anything you haven't thought through. `tokio` never widens a job's permissions on its
@@ -369,6 +447,9 @@ a fork of it:
 - **`tokio` never reads, stores or forwards your Claude credentials.** It doesn't touch
   `~/.claude/.credentials.json` or any API key. It launches `claude` as a subprocess and lets
   Claude Code authenticate itself, exactly as it does when you run it by hand.
+- **The same goes for Codex.** `~/.codex/auth.json` is never opened. Codex is launched as a
+  subprocess and reaches OpenAI with its own login; of what comes back, only the percentages,
+  reset times and plan name are kept.
 - **The database and config stay on your machine**, in `~/.local/share/tokio/` and
   `~/.config/tokio/` — outside the repo, so a `git add .` cannot pick them up. The config is
   written owner-only (`0600`) because it can hold an access token and a Telegram bot token.
@@ -408,16 +489,17 @@ were saving for yourself. Mark a job `--urgent` to override.
 | `tokio run <id>` | Run one now, in the foreground |
 | `tokio rm <id>` | Remove a job |
 | `tokio calibrate <pct>` | Teach it your real limit |
-| `tokio sessions` | Resumable sessions for this directory |
+| `tokio sessions` | Resumable sessions for this directory (`--provider codex` for Codex threads) |
 | `tokio config` | Show the config file and its values, with secrets masked |
 
 Options for `add`:
 
 | Option | Default | |
 |---|---|---|
+| `--provider <agent>` | `claude` | `claude` or `codex` |
 | `--cwd <dir>` | current directory | Which project to run in |
-| `--resume <id\|last>` | new session | Continue an existing conversation |
-| `--model <name>` | your Claude Code default | `opus`, `sonnet`, `haiku` or a full id |
+| `--resume <id\|last>` | new session | Continue an existing conversation (or Codex thread) |
+| `--model <name>` | your Claude Code default | `opus`, `sonnet`, `haiku` or a full id; for Codex, a Codex model, else Codex's own default |
 | `--safety <mode>` | `edits` | See the table above |
 | `--when <policy>` | `on-reset` | `on-reset`, `asap`, `manual`, or an ISO time |
 | `--urgent` | off | Allow spending into the reserve |
@@ -429,6 +511,8 @@ Options for `add`:
 | Key | Default | |
 |---|---|---|
 | `plan` | `auto` | Read from your Claude account. Override with `pro`, `max5`, `max20` or `custom` |
+| `providers` | `null` | `{ "claude": true, "codex": true }` — which agents you use. Asked on first run; until then, whatever was found |
+| `codexBin` / `codexHome` | found / `~/.codex` | Where the Codex CLI and its sessions are, when discovery or `$CODEX_HOME` is not enough |
 | `subscriptionStartedAt` | `null` | `"2026-05-14"` — when you started paying, for `tokio value` |
 | `planPriceUsd` | `null` | Override the monthly price (regional pricing, a team seat) |
 | `reservePct` | `10` | How much of the window to keep for yourself |
@@ -477,9 +561,9 @@ Run that from the repo, so `$(pwd)` resolves. To have it survive logout,
 ## FAQ
 
 **Does this work with ChatGPT?**
-Not with a ChatGPT Plus/Pro subscription — it has no API, and driving the web UI with a browser
-robot would break OpenAI's terms and shatter on every redesign. `tokio` won't do that. Paid API
-keys and OpenAI's own Codex CLI are a different matter and are on the roadmap.
+With OpenAI's own Codex CLI, yes — see [Codex](#codex). Its limits come from your ChatGPT plan,
+and Codex reports them. The ChatGPT web app itself, no: it has no API, and driving the web UI with
+a browser robot would break OpenAI's terms and shatter on every redesign. `tokio` won't do that.
 
 **Isn't this against Anthropic's terms?**
 No. `tokio` reads log files on your own disk and runs the official CLI the same way you would, at
@@ -522,7 +606,8 @@ to loopback unless you deliberately change it. Details in
 - [x] Real percentages and reset times read from Claude Code's own `/usage`
 - [ ] Pay-per-token providers (Anthropic API, OpenAI-compatible, Ollama) via the existing
       [`Provider`](src/providers/types.ts) interface
-- [ ] OpenAI Codex CLI, for people whose subscription is on that side
+- [x] OpenAI Codex CLI: its own rings, read from OpenAI, and jobs run with `codex exec`
+- [x] Codex in dollars, at OpenAI's list prices, copied with the day they were read
 - [ ] Chained jobs — "if this one passes, run that one"
 - [ ] **Suspend when the queue drains.** Queue work overnight, let the machine sleep instead of
       idling. The constraint is the whole design: it may only fire when the queue is *completely*
@@ -535,7 +620,7 @@ to loopback unless you deliberately change it. Details in
 ## Development
 
 ```bash
-npm test          # 108 tests, no tokens spent: the executor runs against a fake CLI
+npm test          # 262 tests, no tokens spent: both executors run against fake CLIs
 npm run dev       # daemon from source, no build step
 npm run dev:web   # dashboard with hot reload, proxying to the daemon
 ```

@@ -39,6 +39,9 @@ eso no lo responde nadie.
 - **Un medidor con los números reales.** No una reconstrucción: `tokio` le pregunta a `/usage` del
   propio Claude Code por el porcentaje y la hora de reset de verdad, y añade lo que solo él puede
   calcular — tu ritmo de quemado y lo que va a costar una petición antes de lanzarla.
+- **Claude Code y Codex, uno al lado del otro.** Si también usas el Codex CLI de OpenAI, sus dos
+  ventanas tienen sus propios anillos, leídos de OpenAI a través del propio Codex, y la cola puede
+  lanzar un prompt con cualquiera de los dos. Mira [Codex](#codex).
 - **La cuenta de lo que vale el plan.** Todas las respuestas que has tenido, a precio de lista de
   la API, contra lo que pagas de verdad. A casi todo el mundo le sorprende.
 
@@ -77,7 +80,10 @@ npm link
 </details>
 
 No hay nada que configurar ni cuenta que crear. `tokio` lee los transcripts que Claude Code ya
-escribe en `~/.claude/projects/`, así que tu historial entero está ahí desde la primera ejecución.
+escribe en `~/.claude/projects/` — y, si usas Codex, las sesiones que escribe en
+`~/.codex/sessions/` —, así que tu historial entero está ahí desde la primera ejecución. La primera
+vez que se abre, el panel te pregunta qué IA usas, con lo que haya encontrado en el equipo ya
+marcado.
 
 Y cuando choques con el muro:
 
@@ -308,6 +314,84 @@ Tres reglas lo mantienen honesto:
 No sale nada a ninguna parte: es la lectura de un fichero que ya tienes, y no se toma nada de él
 salvo el plan.
 
+## Codex
+
+`tokio` mide el Codex CLI de OpenAI igual que mide Claude Code, con las mismas reglas. Cada IA
+tiene su pareja de anillos —la ventana de cinco horas y la semana— bajo una etiqueta pequeña, sobre
+un aro de fondo de su color: naranja para Claude y la tinta de la página para Codex. Los arcos
+mantienen los colores de estado, así que el ámbar sigue significando «vas justo» sea de quien sea
+la ventana.
+
+**De dónde sale el porcentaje de Codex.** De OpenAI, a través del propio Codex. `codex app-server`
+responde a `account/rateLimits/read` por stdio con los mismos porcentajes y horas de reinicio que
+enseña su pantalla de uso. No llama a ningún modelo, así que no gasta tokens, y se consulta con el
+mismo ritmo que el `/usage` de Claude. Codex se autentica con su propia sesión, y `tokio` solo se
+queda con los números: la respuesta trae también un id de cuenta, que no se guarda. Codex marca
+este método como experimental. Cuando no se le puede preguntar —un CLI antiguo, una sesión con
+clave de API—, valen las lecturas que el propio Codex escribe en sus sesiones con cada turno. Esas
+también son de OpenAI, pero solo tan recientes como tu último turno de Codex, y el panel dice cuál
+de las dos estás viendo.
+
+Tres reglas mantienen honestos los anillos de Codex:
+
+- **Una lectura caduca en el reinicio que anunció.** Pasado ese momento, el anillo muestra un guion:
+  ni 0 % ni la cifra antigua arrastrada.
+- **No hay anillo de Codex estimado.** Una ventana de Claude se puede reconstruir contra un tope;
+  para Codex no hay tope contra el que reconstruir, así que una ventana sin lectura actual se dibuja
+  vacía.
+- **Una lectura antigua se marca como antigua.** Dentro de una ventana el porcentaje solo sube, así
+  que una lectura vieja puede quedarse corta pero nunca pasarse. El pie dice cuánto tiempo tiene.
+
+**Qué se cuenta.** Codex escribe un `token_usage_record` por cada respuesta del modelo, cada uno
+con su `response_id`. `tokio` cuenta esos, una fila por id, y nunca los acumulados que van al lado.
+El modelo sale del `turn_context` del turno, porque un hilo puede cambiar de modelo a mitad. La
+entrada incluye la entrada en caché y la salida incluye el razonamiento, tal como los reporta
+OpenAI. Las filas de Codex viven en tablas propias: nada de Codex llega a la ventana, al tope, al
+ritmo de gasto ni a la rentabilidad de Claude.
+
+**Y a qué precio se calcula.** Codex no trae una tabla de precios como la de Claude Code, así que no
+hay nada que copiar de ahí. Lo que OpenAI publica es el precio de lista de su API en la página de
+cada modelo, y [`src/codex/prices.ts`](src/codex/prices.ts) guarda una copia: una fila por modelo,
+cada una con la página de la que salió y el día en que se leyó. Toda cifra de Codex en dólares dice
+*al menos*, y el panel explica por qué:
+
+- **Es el precio Standard de la API, no el de tu plan.** Es lo que habrían costado esas mismas
+  respuestas en la API. Eso incluye el recargo de la API a las peticiones de más de 272K tokens de
+  entrada, que el uso con suscripción no paga.
+- **Solo se calcula el modo Standard.** Codex anota el modo de cada hilo. Una respuesta que fue en
+  otro modo, o sin modo anotado, se queda en tokens; Fast, por ejemplo, cuesta el doble. Un modelo
+  sin fila también se queda en tokens.
+- **Es un mínimo.** Las búsquedas web, las escrituras en caché y el procesamiento regional cuestan
+  aparte en la API, y nada de eso se cuenta.
+- **Un total es todo o nada.** Si alguna respuesta de un periodo no tiene precio, ese periodo no
+  muestra total en dólares y dice cuántas lo impiden.
+
+Los precios se copian a mano y no se actualizan solos. Ninguna página dice desde cuándo rige su
+precio, así que la primera fila de cada modelo no tiene fecha de inicio y cubre todo su histórico
+hasta que haya una fila posterior. Un cambio real de precio es una fila nueva desde su fecha, así que
+las respuestas anteriores conservan el precio al que se ejecutaron. Una fila mal copiada se corrige.
+Cualquiera de los dos cambios recalcula lo guardado en el siguiente arranque, cada respuesta con la
+fila vigente en su propia fecha.
+
+**La cola.** Un trabajo se le puede dar a cualquiera de las dos IA. Uno de Codex ejecuta
+`codex exec --json` en la carpeta que elijas, con el prompt por stdin, y puede continuar un hilo de
+Codex que ya exista. La seguridad se traduce al sandbox de Codex: `plan` es `read-only`, `edits` es
+`workspace-write` y `full` es `danger-full-access`. En este modo Codex nunca se para a preguntar,
+así que el sandbox es toda la correa.
+
+- **El sandbox se pasa siempre.** Sin él, un hilo retomado cae al valor por defecto de tu
+  configuración de Codex.
+- **También se aplica a los hilos retomados.** Se comprobó con un `CODEX_HOME` desechable, sin
+  gastar tokens.
+- **`--skip-git-repo-check` no se pasa.** Esa salvaguarda le toca quitarla a Codex.
+
+Un trabajo de Codex no tiene estimación en dólares, y al terminar tampoco recibe un coste propio:
+lo que reporta `codex exec` es un total de la ejecución, y OpenAI cobra cada petición por separado.
+Sus respuestas cuentan en los totales de Codex en cuanto se leen. Así que cuándo arranca lo deciden
+los porcentajes que reporta OpenAI. La ventana de cinco horas tiene que estar por debajo de la línea de
+reserva, la semana no puede estar llena y OpenAI no puede haber dado el límite por alcanzado.
+*Cuando se reinicie la ventana* quiere decir un reinicio de Codex desde que lo encolaste.
+
 ### Dónde funciona
 
 | | Daemon y CLI | Instalación de una línea | Te abre el navegador | Notificaciones de escritorio |
@@ -324,11 +408,11 @@ Lo que no pueda hacer, lo dice e imprime la URL en vez de fallar.
 Los trabajos en cola se ejecutan sin ti delante. Esa es la gracia y también el riesgo, así que la
 correa la eliges tú en cada trabajo:
 
-| Modo | Opción | Qué puede hacer |
-|---|---|---|
-| `plan` | `--safety plan` | Lee y propone. No toca nada. |
-| `edits` | `--safety edits` | Edita ficheros y ejecuta herramientas sin preguntar. **Por defecto.** |
-| `full` | `--safety full` | Sin restricciones, dentro de ese directorio. |
+| Modo | Opción | Qué puede hacer | Sandbox de Codex |
+|---|---|---|---|
+| `plan` | `--safety plan` | Lee y propone. No toca nada. | `read-only` |
+| `edits` | `--safety edits` | Edita ficheros y ejecuta herramientas sin preguntar. **Por defecto.** | `workspace-write` |
+| `full` | `--safety full` | Sin restricciones, dentro de ese directorio. | `danger-full-access` |
 
 Dos costumbres que compensan: encola el trabajo desatendido sobre una rama que no te importe
 rebobinar, y reserva `plan` para lo que no tengas pensado del todo. `tokio` nunca amplía los
@@ -342,6 +426,9 @@ fork:
 - **`tokio` no lee, ni guarda, ni reenvía tus credenciales de Claude.** No toca
   `~/.claude/.credentials.json` ni ninguna clave de API. Lanza `claude` como subproceso y deja que
   Claude Code se autentique solo, igual que cuando lo ejecutas a mano.
+- **Lo mismo con Codex.** No abre nunca `~/.codex/auth.json`. Lanza Codex como subproceso y deja que
+  llegue a OpenAI con su propia sesión; de lo que vuelve solo se guardan los porcentajes, las horas
+  de reinicio y el nombre del plan.
 - **La base de datos y la configuración se quedan en tu máquina**, en `~/.local/share/tokio/` y
   `~/.config/tokio/` —fuera del repositorio, así que un `git add .` no puede arrastrarlas—. La
   configuración se escribe solo para el propietario (`0600`) porque puede contener un token de
@@ -382,16 +469,17 @@ la ventana que estabas guardando. Con `--urgent` se salta la regla.
 | `tokio run <id>` | Ejecuta uno ya, en primer plano |
 | `tokio rm <id>` | Quita un trabajo |
 | `tokio calibrate <pct>` | Le enseña tu límite real |
-| `tokio sessions` | Sesiones que puedes retomar en este directorio |
+| `tokio sessions` | Sesiones que puedes retomar en este directorio (`--provider codex` para los hilos de Codex) |
 | `tokio config` | Muestra el fichero de configuración, con los secretos enmascarados |
 
 Opciones de `add`:
 
 | Opción | Por defecto | |
 |---|---|---|
+| `--provider <ia>` | `claude` | `claude` o `codex` |
 | `--cwd <dir>` | directorio actual | En qué proyecto se ejecuta |
-| `--resume <id\|last>` | sesión nueva | Continúa una conversación existente |
-| `--model <nombre>` | el de tu Claude Code | `opus`, `sonnet`, `haiku` o un id completo |
+| `--resume <id\|last>` | sesión nueva | Continúa una conversación existente (o un hilo de Codex) |
+| `--model <nombre>` | el de tu Claude Code | `opus`, `sonnet`, `haiku` o un id completo; con Codex, un modelo de Codex o el suyo por defecto |
 | `--safety <modo>` | `edits` | Ver la tabla de arriba |
 | `--when <política>` | `on-reset` | `on-reset`, `asap`, `manual` o una hora ISO |
 | `--urgent` | apagado | Permite gastar de la reserva |
@@ -403,6 +491,8 @@ Opciones de `add`:
 | Clave | Por defecto | |
 |---|---|---|
 | `plan` | `auto` | Se lee de tu cuenta de Claude. Puedes forzar `pro`, `max5`, `max20` o `custom` |
+| `providers` | `null` | `{ "claude": true, "codex": true }`: qué IA usas. Se pregunta en el primer arranque; hasta entonces, lo que se haya encontrado |
+| `codexBin` / `codexHome` | encontrado / `~/.codex` | Dónde están el CLI de Codex y sus sesiones, cuando no bastan la detección o `$CODEX_HOME` |
 | `subscriptionStartedAt` | `null` | `"2026-05-14"` — desde cuándo pagas, para `tokio value` |
 | `planPriceUsd` | `null` | Cambia el precio mensual (precio regional, asiento de equipo) |
 | `reservePct` | `10` | Cuánto de la ventana te guardas |
@@ -444,9 +534,10 @@ cierre de sesión, `loginctl enable-linger $USER`.
 ## Preguntas
 
 **¿Funciona con ChatGPT?**
-Con la suscripción ChatGPT Plus/Pro no: no tiene API, y manejar la web con un robot de navegador
-incumpliría los términos de OpenAI y se rompería con cada rediseño. `tokio` no va a hacer eso.
-Las claves de API de pago y el propio Codex CLI de OpenAI son otra cosa y están en la hoja de ruta.
+Con el Codex CLI de OpenAI, sí: mira [Codex](#codex). Sus límites salen de tu plan de ChatGPT, y
+Codex los reporta. Con la web de ChatGPT, no: no tiene API, y manejar la web con un robot de
+navegador incumpliría los términos de OpenAI y se rompería con cada rediseño. `tokio` no va a
+hacer eso.
 
 **¿Esto va contra los términos de Anthropic?**
 No. `tokio` lee ficheros de log de tu propio disco y ejecuta el CLI oficial igual que lo harías
@@ -483,7 +574,8 @@ escucha solo en loopback salvo que lo cambies a propósito.
 - [x] Porcentajes y resets reales leídos del propio `/usage` de Claude Code
 - [ ] Proveedores de pago por token (API de Anthropic, compatibles con OpenAI, Ollama) por la
       interfaz [`Provider`](src/providers/types.ts) que ya existe
-- [ ] Codex CLI de OpenAI, para quien tenga la suscripción de ese lado
+- [x] Codex CLI de OpenAI: sus propios anillos, leídos de OpenAI, y trabajos con `codex exec`
+- [x] Codex en dólares, a precio de lista de OpenAI, copiado con el día en que se leyó
 - [ ] Trabajos encadenados — "si este pasa, lanza el siguiente"
 - [ ] **Suspender cuando la cola se vacíe.** Dejas trabajo encolado de noche y el equipo duerme en
       vez de estar encendido sin hacer nada. La restricción es todo el diseño: solo puede
@@ -497,7 +589,7 @@ escucha solo en loopback salvo que lo cambies a propósito.
 ## Desarrollo
 
 ```bash
-npm test          # 108 tests, sin gastar tokens: el ejecutor corre contra un CLI falso
+npm test          # 262 tests, sin gastar tokens: los dos ejecutores corren contra CLIs falsos
 npm run dev       # daemon desde el código, sin compilar
 npm run dev:web   # panel con recarga en caliente
 ```

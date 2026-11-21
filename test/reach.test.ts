@@ -57,23 +57,23 @@ test('CLAUDE_CONFIG_DIR is a statement, so nothing is read beside it', () => {
   }
 });
 
-test('a plan nobody established is not reported as a plan', () => {
+test('a plan nobody established is not reported as a plan', async () => {
   // `resolvePlan` still answers 'pro' when the basis is unknown, because the
   // gauges need something to divide by. Passing that on would put "Pro" in
   // front of someone whose plan has never been read.
   const empty = mkdtempSync(join(tmpdir(), 'tokio-noplan-'));
-  const reach = computeReach(cfg({ claudeConfigDir: empty, plan: 'auto' }), 'unknown');
+  const reach = await computeReach(cfg({ claudeConfigDir: empty, plan: 'auto' }), 'unknown');
   assert.equal(reach.plan.basis, 'unknown');
   assert.equal(reach.plan.id, null);
 });
 
-test('nothing found is reported as nothing, not as a default binary', () => {
-  const reach = computeReach(cfg(), 'unknown');
+test('nothing found is reported as nothing, not as a default binary', async () => {
+  const reach = await computeReach(cfg(), 'unknown');
   assert.equal(reach.claude.bin, null);
 });
 
-test('every directory reported carries whether it is across a boundary', () => {
-  const reach = computeReach(cfg({ claudeConfigDir: '\\\\wsl.localhost\\Ubuntu\\home\\me\\.claude' }), 'wsl');
+test('every directory reported carries whether it is across a boundary', async () => {
+  const reach = await computeReach(cfg({ claudeConfigDir: '\\\\wsl.localhost\\Ubuntu\\home\\me\\.claude' }), 'wsl');
   assert.equal(reach.transcripts[0]?.remote, true, 'a UNC path is another filesystem');
   assert.equal(reach.transcripts[0]?.projects, 0, 'a path that is not there has no projects');
 });

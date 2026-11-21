@@ -139,7 +139,7 @@ function sum(db: Db, since: number, until = Date.now()): number {
  * It also only counts what this machine's transcripts contain, so it is a
  * floor, never an overstatement.
  */
-export function computeValue(db: Db, cfg: Config, now = Date.now()): ValueReport {
+export function computeValue(db: Db, cfg: Config, now = Date.now(), resolved = resolvePlan(cfg)): ValueReport {
   const oldest = (db.prepare('SELECT MIN(ts) AS t FROM events').get() as { t: number | null }).t ?? now;
   const configured = cfg.subscriptionStartedAt ? Date.parse(cfg.subscriptionStartedAt) : NaN;
   const sinceIsFirstTranscript = !Number.isFinite(configured);
@@ -149,7 +149,6 @@ export function computeValue(db: Db, cfg: Config, now = Date.now()): ValueReport
 
   // An undetermined plan yields no price, so no payback is built on a plan the
   // user never confirmed. The gauges do not need it: those come from Anthropic.
-  const resolved = resolvePlan(cfg);
   const price = cfg.planPriceUsd ?? (resolved.basis === 'unknown' ? null : PROFILES[resolved.plan]?.priceUsd ?? null);
 
   // Pro-rate rather than counting whole billing periods. Rounding up made the

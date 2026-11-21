@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { access, readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { chmodSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -51,6 +53,18 @@ export interface Config {
   subscriptionStartedAt: string | null;
   /** Monthly price, when it differs from the shipped profile (regional pricing, team seat). */
   planPriceUsd: number | null;
+  /**
+   * Which agents this person uses. Null until they have said: the dashboard
+   * asks on first run, with what was found on the machine already ticked, and
+   * until then the found ones are shown. See `src/agents.ts`.
+   */
+  providers: { claude: boolean; codex: boolean } | null;
+  /** The Codex CLI, as a name or a path. Discovery fills in the default. */
+  codexBin: string;
+  /** A command prefix in front of `codexBin`, the same idea as `claudeLauncher`. */
+  codexLauncher: string[] | null;
+  /** Defaults to `$CODEX_HOME`, then `~/.codex`. */
+  codexHome: string | null;
   notify: NotifyConfig;
 }
 
@@ -74,6 +88,10 @@ const DEFAULTS: Config = {
   usageMaxAgeMs: 15 * 60 * 1000,
   subscriptionStartedAt: null,
   planPriceUsd: null,
+  providers: null,
+  codexBin: 'codex',
+  codexLauncher: null,
+  codexHome: null,
   notify: {
     ntfyTopic: null,
     ntfyServer: 'https://ntfy.sh',
@@ -156,12 +174,47 @@ export function claudeDirs(cfg: Config): string[] {
   return [primary, home];
 }
 
+export async function claudeDirsAsync(cfg: Config): Promise<string[]> {
+  if (process.env.CLAUDE_CONFIG_DIR) return [process.env.CLAUDE_CONFIG_DIR];
+  const primary = claudeDir(cfg);
+  const home = join(homedir(), '.claude');
+  if (primary !== home) {
+    try { await access(join(home, 'projects')); return [primary, home]; } catch { /* no second installation */ }
+  }
+  return [primary];
+}
+
+function parseConfig(text: string): Config {
+  const raw = JSON.parse(text) as Partial<Config>;
+  return { ...DEFAULTS, ...raw, notify: { ...DEFAULTS.notify, ...(raw.notify ?? {}) } };
+}
+
+export async function loadConfigAsync(): Promise<Config> {
+  try {
+    return parseConfig(await readFile(configPath(), 'utf8'));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.error(`tokio: ignoring malformed ${configPath()}: ${(err as Error).message}`);
+    return { ...DEFAULTS };
+  }
+}
+
+export async function saveConfigAsync(cfg: Config): Promise<void> {
+  await mkdir(configDir(), { recursive: true, mode: 0o700 });
+  const path = configPath();
+  const temp = path + '.' + randomUUID();
+  try {
+    await writeFile(temp, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+    await rename(temp, path);
+  } finally {
+    await rm(temp, { force: true });
+  }
+}
+
 export function loadConfig(): Config {
   const path = configPath();
   if (!existsSync(path)) return { ...DEFAULTS };
   try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<Config>;
-    return { ...DEFAULTS, ...raw, notify: { ...DEFAULTS.notify, ...(raw.notify ?? {}) } };
+    return parseConfig(readFileSync(path, 'utf8'));
   } catch (err) {
     console.error(`tokio: ignoring malformed ${path}: ${(err as Error).message}`);
     return { ...DEFAULTS };

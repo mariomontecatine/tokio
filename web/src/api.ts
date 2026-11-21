@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { expireCodexWindows } from './codexVerdict';
 import { desktop } from './desktop';
 
 export interface TracePoint {
@@ -27,6 +28,68 @@ export interface Status {
   headroom: { turnP50: number; turnP90: number; few: number; many: number; sample: number } | null;
   probe: { at: number; ageMs: number; stale: boolean; error: string | null } | null;
   decisions: { id: string; run: boolean; reason: string }[];
+  /** Which agents are metered and offered, and whether the person has said so. */
+  providers: Providers;
+  /** Null while Codex is not in use. */
+  codex: CodexStatus | null;
+}
+
+export interface Providers {
+  claude: boolean;
+  codex: boolean;
+  chosen: boolean;
+}
+
+/** A Codex window as OpenAI reported it. There is no estimated kind. */
+export interface CodexWindow {
+  expiresAt?: number;
+  usedPct: number;
+  resetsAt: number | null;
+  windowMinutes: number | null;
+  start: number | null;
+  source: 'reported';
+  via: 'app-server' | 'rollout';
+  readAt: number;
+  ageMs: number;
+  stale: boolean;
+}
+
+export interface CodexTokens {
+  responses: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  usd: number | null;
+  unpriced: number;
+}
+
+export interface CodexStatus {
+  session: CodexWindow | null;
+  week: CodexWindow | null;
+  planType: string | null;
+  limitReached: string | null;
+  lastResetAt: number | null;
+  probe: { at: number; ageMs: number; error: string | null } | null;
+  tokens: { session: CodexTokens; week: CodexTokens; today: CodexTokens };
+  /** Models Codex ran here recently, most used first. */
+  models: string[];
+  /** Whether any OpenAI price has been copied in. Until then Codex is in tokens. */
+  priced: boolean;
+  /** The day the OpenAI pages behind those prices were read, ISO date. */
+  pricesReadOn: string | null;
+}
+
+export interface AgentFacts {
+  bin: string | null;
+  home: string;
+  homeExists: boolean;
+  found: boolean;
+}
+
+export interface Agents {
+  claude: AgentFacts;
+  codex: AgentFacts;
 }
 
 export type PeriodName = 'today' | 'yesterday' | 'week' | 'month';
@@ -66,6 +129,8 @@ export interface WindowStatus {
 
 export interface Job {
   id: string;
+  /** `claude-code` or `codex`. */
+  provider: string;
   prompt: string;
   /** Which stretches of the prompt were pasted, so they stay folded when it is reopened. */
   promptBlocks: string[] | null;
@@ -86,7 +151,7 @@ export interface Job {
   createdAt: number;
 }
 
-export interface Project { path: string; credits: number; lastUsed: number | null }
+export interface Project { path: string; credits: number | null; lastUsed: number | null }
 export interface Session { sessionId: string; title: string; updatedAt: number }
 
 /**
@@ -154,23 +219,36 @@ export interface Reach {
   claude: { how: string; bin: string | null; launched: boolean };
   transcripts: { dir: string; exists: boolean; projects: number; remote: boolean }[];
   plan: { id: string | null; basis: 'detected' | 'configured' | 'unknown' };
+  providers?: Providers;
+  codex?: {
+    how: string; bin: string | null; home: string; homeExists: boolean; threads: number;
+    priced: boolean; pricesReadOn: string | null;
+  } | null;
 }
+
+/** `codex` for Codex's folders and threads; anything else is Claude's. */
+const forProvider = (provider?: string) => (provider === 'codex' ? 'provider=codex' : '');
 
 export const api = {
   status: () => request<Status>('/api/status'),
   reach: () => request<Reach>('/api/reach'),
+  agents: () => request<{ agents: Agents | null; providers: Providers }>('/api/agents'),
+  saveProviders: (providers: { claude: boolean; codex: boolean }) =>
+    request<{ ok: true }>('/api/config', { method: 'PATCH', body: JSON.stringify({ providers }) }),
   jobs: () => request<Job[]>('/api/jobs'),
-  projects: () => request<Project[]>('/api/projects'),
-  sessions: (cwd: string) => request<Session[]>(`/api/sessions?cwd=${encodeURIComponent(cwd)}`),
+  projects: (provider?: string) => request<Project[]>(`/api/projects?${forProvider(provider)}`),
+  sessions: (cwd: string, provider?: string) =>
+    request<Session[]>(`/api/sessions?cwd=${encodeURIComponent(cwd)}&${forProvider(provider)}`),
   estimate: (body: unknown) =>
-    request<{ estimate: { p50: number; p90: number; basis: string }; afterP50: number; afterP90: number; blockCap: number; remaining: number }>(
-      '/api/estimate', { method: 'POST', body: JSON.stringify(body) },
-    ),
+    request<{
+      estimate: { p50: number; p90: number; basis: string } | null;
+      afterP50: number | null; afterP90: number | null; blockCap: number | null; remaining: number | null;
+    }>('/api/estimate', { method: 'POST', body: JSON.stringify(body) }),
   queue: (body: unknown) => request<Job>('/api/jobs', { method: 'POST', body: JSON.stringify(body) }),
   patch: (id: string, body: unknown) => request<Job>(`/api/jobs/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   remove: (id: string) => request<{ ok: true }>(`/api/jobs/${id}`, { method: 'DELETE' }),
   runNow: (id: string) => request<{ ok: true }>(`/api/jobs/${id}/run`, { method: 'POST' }),
-  refresh: () => request<{ ok: boolean; error: string | null }>('/api/refresh', { method: 'POST' }),
+  refresh: () => request<{ ok: boolean; error: string | null; codexError?: string | null }>('/api/refresh', { method: 'POST' }),
   calibrate: (window: string, pct: number) =>
     request<{ impliedCap: number }>('/api/calibrate', { method: 'POST', body: JSON.stringify({ window, pct }) }),
 };
@@ -192,6 +270,7 @@ export function useDashboard() {
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
   const missed = useRef(false);
+  const receivedAt = useRef(0);
 
   // A change that lands mid-request is not dropped, it is taken next. The old
   // guard returned silently, which meant the very updates that arrive in a
@@ -205,6 +284,7 @@ export function useDashboard() {
     inFlight.current = true;
     try {
       const [s, j] = await Promise.all([api.status(), api.jobs()]);
+      receivedAt.current = Date.now();
       setStatus(s);
       setJobs(j);
       setError(null);
@@ -237,6 +317,19 @@ export function useDashboard() {
     const poll = setInterval(refresh, live === false ? POLL_DEAD_MS : POLL_LIVE_MS);
     return () => clearInterval(poll);
   }, [refresh, live]);
+
+  useEffect(() => {
+    const codex = status?.codex;
+    if (!status || !codex) return;
+    const deadlines = [codex.session, codex.week].flatMap((w) => w?.expiresAt ?? w?.resetsAt ?? []);
+    if (!deadlines.length) return;
+    const now = () => status.now + Date.now() - receivedAt.current;
+    const timer = setTimeout(() => {
+      setStatus((prev) => prev === status ? { ...prev, codex: expireCodexWindows(codex, now()) } : prev);
+      void refresh();
+    }, Math.min(2_147_483_647, Math.max(0, Math.min(...deadlines) - now())));
+    return () => clearTimeout(timer);
+  }, [status, refresh]);
 
   return { status, jobs, live, error, refresh };
 }

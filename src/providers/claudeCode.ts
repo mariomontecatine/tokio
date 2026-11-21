@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import type { Job, Safety } from '../types.ts';
 import type { Provider, RunContext, RunResult } from './types.ts';
 import type { Config } from '../config.ts';
-import { effectiveModel } from '../models.ts';
+import { effectiveModel, effectiveModelAsync } from '../models.ts';
 import { claudeInvocation } from '../claudeCli.ts';
 
 /** Claude Code's `--permission-mode` value for each of our safety levels. */
@@ -26,9 +26,8 @@ export function looksRateLimited(text: string): boolean {
   return RATE_LIMIT_PATTERNS.some((re) => re.test(text));
 }
 
-export function buildArgs(job: Job, cfg: Config): string[] {
+export function buildArgs(job: Job, cfg: Config, model = job.model ?? effectiveModel(cfg)): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
-  const model = job.model ?? effectiveModel(cfg);
   if (model) args.push('--model', model);
   if (job.safety === 'full') args.push('--dangerously-skip-permissions');
   else {
@@ -100,9 +99,10 @@ export function createClaudeCodeProvider(cfg: Config): Provider {
       return null; // The shared estimator handles this; see estimator/predict.ts.
     },
 
-    execute(job: Job, ctx: RunContext): Promise<RunResult> {
+    async execute(job: Job, ctx: RunContext): Promise<RunResult> {
+      const model = job.model ?? await effectiveModelAsync(cfg);
       return new Promise((resolve) => {
-        const { cmd, argv } = claudeInvocation(cfg, buildArgs(job, cfg));
+        const { cmd, argv } = claudeInvocation(cfg, buildArgs(job, cfg, model));
         const child = spawn(cmd, argv, {
           cwd: job.cwd,
           env: process.env,

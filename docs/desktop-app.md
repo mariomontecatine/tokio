@@ -823,6 +823,119 @@ a CLI for anyone who already has the desktop app.
 
 ---
 
+## Codex beside Claude `[doing]`
+
+The same application, for someone who uses both. One screen, a pair of rings per agent, the queue
+able to run either.
+
+`[done]` **Usage from the rollouts.** `src/codex/` reads `$CODEX_HOME/sessions/**/rollout-*.jsonl`
+(and `archived_sessions/`) into tables of its own. Nothing reaches `events`, which feeds Claude's
+window, cap, burn rate and payback.
+
+- **What is counted.** One row per `response_id`, from top-level `token_usage_record` lines only.
+  The model comes from the `turn_context` with the same `turn_id`, and the last one is kept beside
+  the offset, so a restart mid-turn still knows it.
+- **Codex compresses finished sessions.** It zstd-compresses them in place as
+  `rollout-….jsonl.zst`. On the machine this was built on, that was most of the history, and
+  reading only `.jsonl` would have dropped the bulk of it. They are streamed through
+  `node:zlib`'s zstd and read once, since they no longer change.
+  - zstd arrived in Node 22.15. On an older Node they are skipped, and the daemon says so once.
+  - A half-written one fails to decode and is retried on a later sweep.
+- **Measured against a real `~/.codex`**, plain and compressed together:
+  - No duplicates, and no response without a model.
+  - The first full read took 27s; after that, only what changes.
+  - The worst event-loop stall stayed under 10ms across runs, because decompression runs off the
+    main thread.
+  - The limits are asked for in parallel, so the rings do not wait for that first read.
+- **The size is why it reads in pieces.** One rollout is 128 MB and one line in it is 10.6 MB. It
+  reads in bounded chunks that never split a line, and filters on the head of each line before
+  parsing.
+
+`[done]` **Limits without spending a turn.** `codex app-server` answers `account/rateLimits/read`.
+
+- **Measured:** 0.8s, zero turns, fresher than the last rollout.
+- **What is kept:** only the percentages, resets and plan name. The account id in the reply is
+  dropped.
+- **When it cannot be asked:** the `token_count` readings in the rollouts stand in, and the
+  interface says which source it is showing.
+- **What a reading may claim:** it expires at the reset it named, and is never carried forward or
+  shown as 0%.
+- **An idle window, as OpenAI reports it:** 0% with a reset five hours from the moment of asking,
+  moving forward with every read because nothing has started the window.
+  - That moving deadline is not taken as a reset. Only a window that had usage counts as
+    having reset.
+  - An untouched window does count as open. An on-reset Codex job queued into one starts on the
+    next scheduler pass, because the quota is already there; Claude's equivalent starts at the
+    next hour.
+  - After a refused attempt, only a reading taken since that refusal counts. Otherwise a stale 0%
+    would re-run the job on every pass until its attempts ran out.
+  - `[open]` **Whether that is what "when the window resets" should mean for Codex.** The review
+    by Codex argued for waiting for evidence of a reset instead. That would leave a job queued
+    into an idle window waiting indefinitely, so it was not taken, but the call is a product one.
+
+`[done]` **The queue.** `codex exec --json` takes the prompt on stdin.
+
+- **The sandbox:** `read-only`, `workspace-write` or `danger-full-access`, always passed.
+- **Resume, verified at zero tokens.** The check used a throwaway `CODEX_HOME` and a model
+  provider pointed at a closed port.
+  - Options placed before `resume` apply to the resumed turn, although its help does not list them.
+  - With no flag, a resumed turn gets the configured default, not the thread's own sandbox.
+- **`--skip-git-repo-check` is not passed.** That safeguard is Codex's to lift.
+
+`[done]` **First run asks which AI.** What was found is ticked. Detection does not trust PATH
+alone, because an application opened from the Finder gets `/usr/bin:/bin:/usr/sbin:/sbin`. It also
+tries the usual install directories and counts a `~/.codex/sessions` as evidence. The answer is
+`providers` in the config, and the daemon starts or stops Codex's half when it changes.
+
+`[done]` **Brand tracks, measured in both themes.** The contrast of each state arc against the
+track under it is in the comment above the rules in `styles.css`. The weakest solid pair is 3.4:1.
+
+`[done]` **Codex in dollars.** `src/codex/prices.ts` carries OpenAI's Standard API list price for
+five models, each copied from the model's own page and read on 2026-11-21. Every figure on screen
+says *at least*, and where it comes from.
+
+- **No start dates.** None of the pages says since when its price applies. A model's first row
+  has `from: null` and covers its whole history until a later row. A launch date is not a price
+  date, and the day the page was read would have claimed the price began then and left all history
+  unpriced. The cost: older responses are priced at what the page said when it was read, so a price
+  that was lower before then, with no row for it, would make those figures high rather than a
+  floor.
+- **Re-pricing is automatic.** The stamp that decides when stored responses are priced again is a
+  hash of the rows plus `OPENAI_PRICING_VERSION`, so any edit to the table reaches what is stored.
+  Before this, a response stored while its model had no row stayed unpriced for good: only a version
+  bump would have reached it, and nothing said to bump for a new row.
+- **The tier is recorded after all.** This note used to say it was not. Codex writes each thread's
+  settings as `event_msg` / `thread_settings_applied`, `service_tier` included, before the turns
+  they apply to. Only `default` has been seen written. Fast is `priority` in Codex's model catalog,
+  but what the settings line says for it is unknown. So only `default` is priced; any other tier, or
+  none recorded, stays in tokens rather than take a guessed multiple.
+- **The 272K rule is on every page.** Past 272K input tokens the whole request costs 2× input and
+  cache and 1.5× output. It is applied, although the GPT-6.1 Sol page says subscription use does not
+  pay it, because the figure is the API's price.
+- **Why it is a floor.** Web search calls, cache writes and regional processing cost extra and are
+  not priced. Cache writes are recorded per response (`cache_write_input_tokens`) but count as plain
+  input.
+- **A Codex job has no cost of its own.** `codex exec` reports a total for the run, and the 272K
+  rule and the tier are per request, so pricing that total would be wrong. The rollout, which has
+  both, may not have been read when the run ends. The job's responses count in Codex's totals.
+- **The prices do not update themselves.** tokio never fetches them. A new model or a new price is
+  a row added by hand.
+
+`[open]` **What has not been seen.**
+
+- **A successful `codex exec --json` run.** The event names come from the 0.168 binary, and only
+  the failure half has been observed.
+- **Codex on Windows or inside WSL.** `codexLauncher` and the `.cmd` shim handling are there, but
+  untried.
+- **A Codex strip.** There is one reading per turn to draw from, and nothing draws it yet.
+- **Per-model limits** (a `limitId` other than `codex`). They are stored and not drawn.
+- **Any tier but `default` in `thread_settings_applied`.** Seeing what Fast writes means a run in
+  Fast, which spends quota at twice the rate. Until then a response at any other tier is unpriced.
+- **A cost per Codex job.** It needs to know the rollout has been read up to the end of the run, so
+  that the priced part of a run is never shown as all of it.
+
+---
+
 ## Groundwork already done `[done]`
 
 Today's metering work is a prerequisite for all of the above, not a coincidence.

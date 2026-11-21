@@ -1,25 +1,31 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { timingSafeEqual } from 'node:crypto';
-import { existsSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { stat } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Db } from '../db.ts';
 import type { Config } from '../config.ts';
-import { loadConfig, saveConfig, claudeDir, claudeDirs, redactConfig } from '../config.ts';
+import { loadConfigAsync, saveConfigAsync, claudeDirsAsync, redactConfig } from '../config.ts';
 import { computeStatus } from '../meter/index.ts';
 import { computeReach, type Reach } from '../reach.ts';
 import { computeValue } from '../meter/value.ts';
 import { predict } from '../estimator/predict.ts';
 import { accuracy } from '../estimator/learn.ts';
 import { addAnchor, planLabel, type WindowKind } from '../plans/calibrate.ts';
-import { resolvePlan } from '../plans/detect.ts';
+import { resolvePlanAsync } from '../plans/detect.ts';
 import { createJob, deleteJob, getJob, listJobs, updateJob } from '../queue/store.ts';
-import { SAFETIES, changesTheEstimate, readJobFields } from '../queue/validate.ts';
+import { PROVIDERS, SAFETIES, changesTheEstimate, readJobFields } from '../queue/validate.ts';
 import type { Scheduler } from '../queue/scheduler.ts';
 import { recentSessions, knownProjects } from './projects.ts';
-import { effectiveModel } from '../models.ts';
+import { effectiveModelAsync } from '../models.ts';
 import type { JobStatus, Safety } from '../types.ts';
+import { effectiveProviders, type Agents } from '../agents.ts';
+import { computeCodexStatus } from '../codex/meter.ts';
+import { codexProjects, codexSessions } from '../codex/sessions.ts';
+import { codexHome } from '../codex/store.ts';
+import { hasPrices, pricesReadOn } from '../codex/prices.ts';
+import { discoverRollouts } from '../codex/ingest.ts';
 
 /** Statuses a job can be started from. Anything else has already had its turn. */
 const RUNNABLE = new Set<JobStatus>(['queued', 'deferred', 'cancelled']);
@@ -113,6 +119,14 @@ const CONFIG_FIELDS: Record<string, (value: unknown) => unknown> = {
     return v;
   },
   planPriceUsd: nullableAmount,
+  // The first-run answer, and any change of mind after it. At least one agent:
+  // "neither" is not a configuration, it is an empty page.
+  providers: (v) => {
+    if (!v || typeof v !== 'object') return REJECTED;
+    const { claude, codex } = v as Record<string, unknown>;
+    if (typeof claude !== 'boolean' || typeof codex !== 'boolean' || (!claude && !codex)) return REJECTED;
+    return { claude, codex };
+  },
 };
 
 export interface ServerDeps {
@@ -124,6 +138,14 @@ export interface ServerDeps {
   onChange: (listener: () => void) => () => void;
   /** Re-reads the real percentages from Claude Code. */
   refresh?: () => Promise<{ error: string | null }>;
+  /** What is installed here. Absent, nothing is assumed beyond Claude, as before. */
+  agents?: Agents;
+  /** How the Codex CLI was found, for the reach panel. */
+  codexHow?: string;
+  /** Re-reads Codex's limits through its app server. */
+  refreshCodex?: () => Promise<{ error: string | null }>;
+  /** Told when the providers setting changes, so the daemon can start or stop each half. */
+  onProvidersChanged?: () => void;
 }
 
 export async function createServer(deps: ServerDeps) {
@@ -150,12 +172,20 @@ export async function createServer(deps: ServerDeps) {
     }
   });
 
-  app.get('/api/value', async () => computeValue(db, cfg));
+  app.get('/api/value', async () => computeValue(db, cfg, Date.now(), await resolvePlanAsync(cfg)));
 
+  const providers = () => effectiveProviders(cfg, deps.agents ?? null);
+
+  // `{ ok, error }` as it always was, for whichever agents are on. The Codex
+  // half also comes back on its own, so a page can say which one failed.
   app.post('/api/refresh', async () => {
-    if (!deps.refresh) return { ok: false, error: 'no daemon is running to refresh from' };
-    const probe = await deps.refresh();
-    return { ok: !probe.error, error: probe.error };
+    const on = providers();
+    const claude = on.claude && deps.refresh ? deps.refresh() : null;
+    const codex = on.codex && deps.refreshCodex ? deps.refreshCodex() : null;
+    if (!claude && !codex) return { ok: false, error: 'no daemon is running to refresh from' };
+    const [c, x] = await Promise.all([claude, codex]);
+    const error = c?.error ?? x?.error ?? null;
+    return { ok: !error, error, codexError: x?.error ?? null };
   });
 
   app.get('/api/status', async () => {
@@ -163,15 +193,23 @@ export async function createServer(deps: ServerDeps) {
     // agree — a job explained against a second, slightly later window is a job
     // whose reason contradicts the gauge above it — and building it once is
     // also half the work.
-    const status = computeStatus(db, cfg);
+    const plan = await resolvePlanAsync(cfg);
+    const status = computeStatus(db, cfg, Date.now(), plan);
+    const on = providers();
+    const codex = on.codex ? computeCodexStatus(db, cfg, status.now) : null;
     return {
       ...status,
-      value: computeValue(db, cfg),
-      planLabel: planLabel(resolvePlan(cfg).plan),
+      providers: on,
+      codex: codex && { ...codex, priced: hasPrices(), pricesReadOn: pricesReadOn() },
+      value: computeValue(db, cfg, status.now, plan),
+      planLabel: planLabel(plan.plan),
       accuracy: accuracy(db),
-      decisions: scheduler.explain(status).map((d) => ({ id: d.job.id, run: d.run, reason: d.reason })),
+      decisions: scheduler.explain(status, codex).map((d) => ({ id: d.job.id, run: d.run, reason: d.reason })),
     };
   });
+
+  // What is installed, for the first-run question and for changing the answer.
+  app.get('/api/agents', async () => ({ agents: deps.agents ?? null, providers: providers() }));
 
   app.get('/api/jobs', async () => listJobs(db));
 
@@ -180,16 +218,26 @@ export async function createServer(deps: ServerDeps) {
     return job ?? reply.code(404).send({ error: 'not found' });
   });
 
-  app.post('/api/estimate', async (req) => {
-    const b = req.body as any;
+  app.post('/api/estimate', async (req, reply) => {
+    const b = (req.body ?? {}) as any;
+    if (b.provider !== undefined && !PROVIDERS.includes(b.provider)) {
+      return reply.code(400).send({ error: `provider must be one of ${PROVIDERS.join(', ')}` });
+    }
+    // Codex has no dollar estimate to give: the estimator learns Claude turns in
+    // Claude's prices, and a Codex window has no cap to express one against.
+    // Saying nothing is the honest answer, and the page says why.
+    if (b?.provider === 'codex') {
+      return { estimate: null, afterP50: null, afterP90: null, blockCap: null, remaining: null };
+    }
     const estimate = predict(db, {
       prompt: String(b.prompt ?? ''),
       cwd: String(b.cwd ?? process.cwd()),
-      model: b.model ?? effectiveModel(cfg),
+      model: b.model ?? await effectiveModelAsync(cfg),
       safety: (b.safety ?? cfg.defaultSafety) as Safety,
       resumeSessionId: b.resumeSessionId ?? null,
     });
-    const status = computeStatus(db, cfg);
+    const plan = await resolvePlanAsync(cfg);
+    const status = computeStatus(db, cfg, Date.now(), plan);
     return {
       estimate,
       // What the block looks like after this job, so the answer to "and what am
@@ -206,15 +254,21 @@ export async function createServer(deps: ServerDeps) {
     const fields = readJobFields(b);
     if (!fields.ok) return reply.code(400).send({ error: fields.error });
     if (!fields.value.prompt) return reply.code(400).send({ error: 'prompt is required' });
-    const cwd = String(b.cwd ?? process.cwd());
-    if (!existsSync(cwd)) return reply.code(400).send({ error: `no such directory: ${cwd}` });
+    const cwd = resolve(String(b.cwd ?? process.cwd()));
+    if (b.cwd === '') return reply.code(400).send({ error: 'cwd must name a directory' });
+    if (!(await stat(cwd).catch(() => null))?.isDirectory()) return reply.code(400).send({ error: `no such directory: ${cwd}` });
 
     const prompt = fields.value.prompt;
+    const provider = fields.value.provider ?? 'claude-code';
+    const codex = provider === 'codex';
     const safety = fields.value.safety ?? (cfg.defaultSafety as Safety);
-    const model = fields.value.model ?? effectiveModel(cfg);
+    // Claude's default model is Claude's. A Codex job with no model runs on
+    // whatever Codex itself is set to, which is not ours to name.
+    const model = fields.value.model ?? (codex ? null : await effectiveModelAsync(cfg));
     const resumeSessionId = fields.value.resumeSessionId ?? null;
-    const estimate = predict(db, { prompt, cwd, model, safety, resumeSessionId });
+    const estimate = codex ? null : predict(db, { prompt, cwd, model, safety, resumeSessionId });
     const job = createJob(db, {
+      provider,
       prompt,
       promptBlocks: fields.value.promptBlocks ?? null,
       cwd,
@@ -225,9 +279,9 @@ export async function createServer(deps: ServerDeps) {
       runAt: fields.value.runAt ?? null,
       priority: fields.value.priority ?? 0,
       urgent: fields.value.urgent ?? false,
-      estimateP50: estimate.p50,
-      estimateP90: estimate.p90,
-      estimateBasis: estimate.basis,
+      estimateP50: estimate?.p50 ?? null,
+      estimateP90: estimate?.p90 ?? null,
+      estimateBasis: estimate?.basis ?? null,
     });
     void scheduler.tick();
     return reply.code(201).send(job);
@@ -245,6 +299,8 @@ export async function createServer(deps: ServerDeps) {
    */
   app.patch('/api/jobs/:id', async (req, reply) => {
     const id = (req.params as any).id;
+    const fallbackModel = (req.body as any)?.model === null || (req.body as any)?.model === ''
+      ? await effectiveModelAsync(cfg) : null;
     const existing = getJob(db, id);
     if (!existing) return reply.code(404).send({ error: 'not found' });
     if (existing.status === 'running' || scheduler.busy.includes(id)) {
@@ -253,6 +309,12 @@ export async function createServer(deps: ServerDeps) {
 
     const fields = readJobFields(req.body, { runPolicy: existing.runPolicy, runAt: existing.runAt });
     if (!fields.ok) return reply.code(400).send({ error: fields.error });
+    // The session it continues and the model it names belong to its agent, so
+    // moving a job to the other one would leave both pointing at nothing.
+    if (fields.value.provider !== undefined && fields.value.provider !== (existing.provider || 'claude-code')) {
+      return reply.code(400).send({ error: 'a queued job keeps its agent — queue it again for the other one' });
+    }
+    delete fields.value.provider;
 
     // A job that has run is a record of what ran. Editing its prompt would put
     // a cost and an output next to something that never produced them — unless
@@ -262,11 +324,13 @@ export async function createServer(deps: ServerDeps) {
     }
 
     const patch: Record<string, unknown> = { ...fields.value };
-    if (changesTheEstimate(fields.value)) {
+    // A Codex job has no estimate to keep in step with its prompt.
+    const codexJob = existing.provider === 'codex';
+    if (!codexJob && changesTheEstimate(fields.value)) {
       const estimate = predict(db, {
         prompt: fields.value.prompt ?? existing.prompt,
         cwd: existing.cwd,
-        model: 'model' in fields.value ? (fields.value.model ?? effectiveModel(cfg)) : existing.model,
+        model: 'model' in fields.value ? (fields.value.model ?? fallbackModel) : existing.model,
         safety: fields.value.safety ?? existing.safety,
         resumeSessionId: 'resumeSessionId' in fields.value ? fields.value.resumeSessionId : existing.resumeSessionId,
       });
@@ -306,7 +370,8 @@ export async function createServer(deps: ServerDeps) {
   app.post('/api/calibrate', async (req, reply) => {
     const b = req.body as any;
     const kind = (b.window ?? 'block') as WindowKind;
-    const status = computeStatus(db, cfg);
+    const plan = await resolvePlanAsync(cfg);
+    const status = computeStatus(db, cfg, Date.now(), plan);
     const credits =
       kind === 'block' ? status.block.window.credits
       : kind === 'week' ? status.week.window.credits
@@ -322,12 +387,34 @@ export async function createServer(deps: ServerDeps) {
   // What this installation can and cannot see. Static for the life of the
   // daemon apart from the transcript count, so it is its own route rather than
   // weight on `/api/status`, which is polled.
-  app.get('/api/reach', async () => computeReach(cfg, deps.claudeHow ?? 'unknown'));
+  app.get('/api/reach', async () => {
+    const on = providers();
+    // Counted on disk, not from the database: the panel is read on the first
+    // load, which is exactly when the ingest has not finished yet.
+    const threads = on.codex ? (await discoverRollouts(codexHome(cfg))).length : 0;
+    return {
+      ...await computeReach(cfg, deps.claudeHow ?? 'unknown'),
+      providers: on,
+      codex: on.codex
+        ? {
+            how: deps.agents && !deps.agents.codex.bin ? 'unknown' : deps.codexHow ?? 'unknown',
+            bin: deps.agents?.codex.bin ?? null,
+            home: codexHome(cfg),
+            homeExists: threads > 0 || (deps.agents?.codex.homeExists ?? false),
+            threads,
+            priced: hasPrices(),
+            pricesReadOn: pricesReadOn(),
+          }
+        : null,
+    };
+  });
 
   app.get('/api/config', async () => redactConfig(cfg));
 
+  let configWrite = Promise.resolve();
   app.patch('/api/config', async (req, reply) => {
-    const b = (req.body ?? {}) as any;
+    const b = req.body as any;
+    if (!b || typeof b !== 'object' || Array.isArray(b)) return reply.code(400).send({ error: 'expected a JSON object' });
     const changes: Record<string, unknown> = {};
     for (const [key, check] of Object.entries(CONFIG_FIELDS)) {
       if (!(key in b)) continue;
@@ -336,31 +423,37 @@ export async function createServer(deps: ServerDeps) {
       changes[key] = value;
     }
 
-    // GET hands back masked secrets, so a client that reads the config, edits
-    // one field and writes the whole thing back would otherwise save the mask
-    // over the real credential and silently break notifications.
-    if ('notify' in b) changes.notify = { ...cfg.notify, ...dropMasked(b.notify) };
-
     // The file, not the running config. `--host` and `--port` are answers to
     // "where should this one run", and writing them back would turn a flag
     // typed once into a setting that outlives the reason for it.
-    const persisted = loadConfig();
-    Object.assign(persisted, changes);
-    saveConfig(persisted);
-    Object.assign(cfg, changes);
+    const write = configWrite.then(async () => {
+      // A config round trip must preserve the credentials masked in the GET response.
+      if ('notify' in b) changes.notify = { ...cfg.notify, ...dropMasked(b.notify) };
+      const persisted = await loadConfigAsync();
+      Object.assign(persisted, changes);
+      await saveConfigAsync(persisted);
+      Object.assign(cfg, changes);
+      if ('providers' in changes) deps.onProvidersChanged?.();
+    });
+    configWrite = write.catch(() => {});
+    await write;
     return { ok: true };
   });
 
   // Both installations' projects, for the same reason both are metered: a
   // picker that offered only half of them would send work to the wrong list.
-  app.get('/api/projects', async () => {
+  // `?provider=codex` lists where Codex has worked instead.
+  app.get('/api/projects', async (req) => {
+    if ((req.query as any)?.provider === 'codex') return codexProjects(db);
     const seen = new Set<string>();
-    return (await Promise.all(claudeDirs(cfg).map((dir) => knownProjects(db, dir)))).flat()
+    return (await Promise.all((await claudeDirsAsync(cfg)).map((dir) => knownProjects(db, dir)))).flat()
       .filter((p) => !seen.has(p.path) && seen.add(p.path));
   });
   app.get('/api/sessions', async (req) => {
     const cwd = String((req.query as any)?.cwd ?? '');
-    return (await Promise.all(claudeDirs(cfg).map((dir) => recentSessions(dir, cwd)))).flat()
+    if (!cwd) return [];
+    if ((req.query as any)?.provider === 'codex') return codexSessions(db, codexHome(cfg), cwd);
+    return (await Promise.all((await claudeDirsAsync(cfg)).map((dir) => recentSessions(dir, cwd)))).flat()
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 15);
   });
@@ -407,7 +500,7 @@ export async function createServer(deps: ServerDeps) {
   });
 
   const webRoot = join(HERE, '..', 'web');
-  if (existsSync(join(webRoot, 'index.html'))) {
+  if ((await stat(join(webRoot, 'index.html')).catch(() => null))?.isFile()) {
     await app.register(fastifyStatic, { root: webRoot });
     app.setNotFoundHandler((req, reply) => {
       if (req.url.startsWith('/api')) return reply.code(404).send({ error: 'not found' });

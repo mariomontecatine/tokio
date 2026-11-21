@@ -16,12 +16,15 @@ import { checkPromptBlocks } from './blocks.ts';
  */
 
 export const SAFETIES: readonly Safety[] = ['plan', 'edits', 'full'];
+/** The agents a job can be run by. A job without one is Claude's, as every job once was. */
+export const PROVIDERS: readonly string[] = ['claude-code', 'codex'];
 export const RUN_POLICIES: readonly RunPolicy[] = ['on-reset', 'asap-if-headroom', 'at', 'manual'];
 
 /** Statuses a person may set by hand. The rest are the scheduler's to write. */
 export const SETTABLE_STATUS: readonly JobStatus[] = ['queued', 'cancelled'];
 
 export interface JobFields {
+  provider?: string;
   prompt?: string;
   promptBlocks?: string[] | null;
   model?: string | null;
@@ -75,6 +78,13 @@ export function readJobFields(body: unknown, baseline?: JobBaseline): Checked<Jo
   if (!isObject(body)) return { ok: false, error: 'expected a JSON object' };
   const out: JobFields = {};
 
+  if ('provider' in body) {
+    if (!PROVIDERS.includes(body.provider as string)) {
+      return { ok: false, error: `provider must be one of ${PROVIDERS.join(', ')}` };
+    }
+    out.provider = body.provider as string;
+  }
+
   if ('prompt' in body) {
     if (typeof body.prompt !== 'string') return { ok: false, error: 'prompt must be text' };
     const prompt = body.prompt.trim();
@@ -126,7 +136,10 @@ export function readJobFields(body: unknown, baseline?: JobBaseline): Checked<Jo
     out.priority = Math.trunc(priority);
   }
 
-  if ('urgent' in body) out.urgent = Boolean(body.urgent);
+  if ('urgent' in body) {
+    if (typeof body.urgent !== 'boolean') return { ok: false, error: 'urgent must be a boolean' };
+    out.urgent = body.urgent;
+  }
 
   if ('status' in body) {
     if (!SETTABLE_STATUS.includes(body.status as JobStatus)) {

@@ -5,6 +5,7 @@
 // output" beats "might not start" on a machine nobody here can test. The
 // installed command is a shim that passes the flag properly; from source, the
 // notice shows.
+import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { openDb } from './db.ts';
 import { loadConfig, saveConfig, configPath, claudeDir, redactConfig } from './config.ts';
@@ -21,6 +22,14 @@ import { recentSessions } from './server/projects.ts';
 import { effectiveModel } from './models.ts';
 import { daemonRunning, dashboardUrl, openInBrowser } from './net.ts';
 import type { RunPolicy, Safety } from './types.ts';
+import { resolveCodex } from './codex/cli.ts';
+import { CodexIngestor } from './codex/ingest.ts';
+import { probeCodexLimits } from './codex/limits.ts';
+import { computeCodexStatus, type CodexWindowStatus } from './codex/meter.ts';
+import { hasPrices, pricesReadOn } from './codex/prices.ts';
+import { codexSessions } from './codex/sessions.ts';
+import { codexHome, latestCodexAttempt, saveCodexReading } from './codex/store.ts';
+import { detectAgents, effectiveProviders, type Providers } from './agents.ts';
 
 const HELP = `tokio — queue prompts for your coding agent and watch your subscription quota
 
@@ -37,12 +46,14 @@ Usage
   tokio run <id>                             Run a job now, in the foreground
   tokio rm <id>                              Remove a job
   tokio calibrate <percent>                  Teach tokio your real limit
-  tokio sessions [--cwd <dir>]               List resumable sessions
+  tokio sessions [--cwd <dir>] [--provider codex]   List resumable sessions
   tokio config                               Show config file path and values
 
 Options for "add"
+  --provider <agent> claude | codex                     (default: claude)
   --cwd <dir>        Project directory                  (default: current dir)
-  --model <name>     opus | sonnet | haiku | full id    (default: config)
+  --model <name>     opus | sonnet | haiku | full id    (default: config;
+                     for Codex, whatever Codex is set to)
   --safety <mode>    plan | edits | full                (default: config)
   --resume <id|last> Continue an existing session
   --when <policy>    on-reset | asap | manual | <ISO time>   (default: on-reset)
@@ -61,17 +72,58 @@ function bar(pct: number, width = 24): string {
   return '█'.repeat(filled) + '░'.repeat(width - filled);
 }
 
-async function freshDb() {
-  const cfg = loadConfig();
+async function freshDb(): Promise<{ db: ReturnType<typeof openDb>; cfg: ReturnType<typeof loadConfig>; on: Providers }> {
+  const loaded = loadConfig();
+  const cfg = (await resolveCodex(loaded)).cfg;
   const db = openDb();
-  // Pick up anything Claude Code wrote since the last daemon pass, so one-shot
-  // commands are accurate even with no daemon running.
+  const on = effectiveProviders(cfg, await detectAgents(cfg));
+  // Pick up anything Claude Code — and Codex, when it is in use — wrote since
+  // the last daemon pass, so one-shot commands are accurate with no daemon.
   await new Ingestor(db, cfg).scan();
-  return { db, cfg };
+  if (on.codex) await new CodexIngestor(db, codexHome(cfg)).scan();
+  return { db, cfg, on };
+}
+
+const codexLine = (label: string, w: CodexWindowStatus | null): string =>
+  w
+    ? `  ${label.padEnd(10)} ${bar(w.usedPct)} ${w.usedPct.toFixed(0).padStart(3)}%   resets ${clock(w.resetsAt)}` +
+      (w.via === 'rollout' || w.stale ? `  (${w.via === 'rollout' ? 'read with the last Codex turn' : 'read by app-server'}, ${Math.round(w.ageMs / 60000)} min ago)` : '')
+    : `  ${label.padEnd(10)} no reading — nothing current from OpenAI for this window`;
+
+/** Codex's half of `tokio status`: OpenAI's percentages, and the tokens counted here. */
+async function printCodex(db: ReturnType<typeof openDb>, cfg: ReturnType<typeof loadConfig>, refresh: boolean): Promise<void> {
+  const last = latestCodexAttempt(db);
+  if (refresh || !last || Date.now() - last.at > cfg.usageMaxAgeMs) {
+    const reading = await probeCodexLimits(cfg);
+    saveCodexReading(db, reading);
+    if (reading.error) console.error(`\n  Could not read Codex's limits: ${reading.error}`);
+  }
+  const c = computeCodexStatus(db, cfg);
+  console.log(`  Codex${c.planType ? ` (${c.planType}, reported by OpenAI)` : ''}`);
+  console.log(codexLine('5h window', c.session));
+  console.log(codexLine('Week', c.week));
+  const t = c.tokens.today;
+  if (t.responses > 0) {
+    // The same rule as the dashboard: a floor, said to be one, and no total
+    // at all while any response in the span has no price.
+    const priced = hasPrices();
+    const dollars = !priced ? '' : t.usd !== null ? `, at least ${money(t.usd)}` : `, no dollar total (${t.unpriced} without a price)`;
+    console.log(`  Today      ${t.responses} responses, ${(t.inputTokens / 1e6).toFixed(2)}M in (${(t.cachedInputTokens / 1e6).toFixed(2)}M cached), ${(t.outputTokens / 1e3).toFixed(1)}k out${dollars}`);
+    if (priced && t.usd !== null) {
+      console.log(`             at OpenAI's Standard API list price, read ${pricesReadOn()}; web search, cache writes and regional processing not counted`);
+    }
+  }
+  console.log('');
 }
 
 async function cmdStatus(refresh: boolean): Promise<void> {
-  const { db, cfg } = await freshDb();
+  const { db, cfg, on } = await freshDb();
+  if (!on.claude) {
+    console.log('');
+    await printCodex(db, cfg, refresh);
+    printQueue(db);
+    return;
+  }
 
   // Reading /usage costs nothing and takes a few seconds, so do it whenever the
   // last one has gone stale — a wrong percentage is worse than a slow command.
@@ -116,16 +168,22 @@ async function cmdStatus(refresh: boolean): Promise<void> {
   if (v.multiple !== null) {
     console.log(`  Worth ${money(v.equivalentUsd)} at API prices for ${money(v.paidUsd!)} paid — ${v.multiple.toFixed(1)}× your subscription`);
   }
+  console.log('');
+  if (on.codex) await printCodex(db, cfg, refresh);
+  printQueue(db);
+}
 
+function printQueue(db: ReturnType<typeof openDb>): void {
   const pending = listJobs(db, ['queued', 'deferred', 'running']);
   if (pending.length) {
-    console.log(`\n  Queue (${pending.length}):`);
+    console.log(`  Queue (${pending.length}):`);
     for (const j of pending) {
-      const est = j.estimateP50 != null ? `~${money(j.estimateP50)}` : '?';
-      console.log(`    ${j.id}  ${j.status.padEnd(8)} ${est.padStart(7)}  ${j.prompt.slice(0, 46).replace(/\n/g, ' ')}`);
+      const est = j.estimateP50 != null ? `~${money(j.estimateP50)}` : '—';
+      const agent = j.provider === 'codex' ? 'codex ' : '';
+      console.log(`    ${j.id}  ${j.status.padEnd(8)} ${est.padStart(7)}  ${agent}${j.prompt.slice(0, 46).replace(/\n/g, ' ')}`);
     }
+    console.log('');
   }
-  console.log('');
 }
 
 function resolvePolicy(when: string | undefined): { runPolicy: RunPolicy; runAt: number | null } {
@@ -137,9 +195,50 @@ function resolvePolicy(when: string | undefined): { runPolicy: RunPolicy; runAt:
   return { runPolicy: 'at', runAt: at };
 }
 
-async function cmdAdd(prompt: string, opts: Record<string, any>): Promise<void> {
+/** `--provider codex`, and the spellings someone might reach for. */
+function providerOf(raw: unknown): 'claude-code' | 'codex' {
+  if (raw === undefined || raw === null || raw === '') return 'claude-code';
+  const name = String(raw).toLowerCase();
+  if (name === 'codex' || name === 'openai') return 'codex';
+  if (name === 'claude' || name === 'claude-code') return 'claude-code';
+  throw new Error(`unknown provider "${raw}" — use claude or codex`);
+}
+
+async function cmdAddCodex(prompt: string, opts: Record<string, any>): Promise<void> {
   const { db, cfg } = await freshDb();
+  const cwd = resolve(opts.cwd ? String(opts.cwd) : process.cwd());
+  const safety = (opts.safety ?? cfg.defaultSafety) as Safety;
+  if (!['plan', 'edits', 'full'].includes(safety)) throw new Error(`unknown safety mode "${safety}"`);
+
+  let resumeSessionId: string | null = opts.resume ?? null;
+  if (resumeSessionId === 'last') {
+    const [latest] = await codexSessions(db, codexHome(cfg), cwd, 1);
+    if (!latest) throw new Error(`no previous Codex thread found for ${cwd}`);
+    resumeSessionId = latest.sessionId;
+    console.log(`  resuming "${latest.title || latest.sessionId.slice(0, 8)}"`);
+  }
+
+  const { runPolicy, runAt } = resolvePolicy(opts.when);
+  const job = createJob(db, {
+    provider: 'codex', prompt, cwd, safety, resumeSessionId, runPolicy, runAt,
+    // Codex's own default when none is named; Claude's default is not a Codex model.
+    model: opts.model ?? null,
+    priority: Number(opts.priority ?? 0),
+    urgent: Boolean(opts.urgent),
+  });
+  const codex = computeCodexStatus(db, cfg);
+  console.log(`\n  Queued ${job.id} for Codex: ${prompt.slice(0, 60).replace(/\n/g, ' ')}`);
+  console.log('  Estimate  none — Codex reports percentages, not prices, so there is nothing to price it against');
+  if (codex.session) console.log(`  Window    ${codex.session.usedPct.toFixed(0)}% of Codex's 5h window used (reported by OpenAI)`);
+  const reset = codex.session?.resetsAt ?? null;
+  console.log(`  Runs      ${runPolicy === 'at' ? `at ${new Date(runAt!).toLocaleString()}` : runPolicy === 'on-reset' ? `when the Codex window resets${reset ? ` (${clock(reset)})` : ''}` : runPolicy === 'manual' ? 'only when you say so' : 'as soon as it fits'}`);
+  console.log(`  Safety    ${safety} (codex sandbox: ${safety === 'plan' ? 'read-only' : safety === 'edits' ? 'workspace-write' : 'danger-full-access'})${safety === 'full' ? '  ⚠ unrestricted' : ''}\n`);
+}
+
+async function cmdAdd(prompt: string, opts: Record<string, any>): Promise<void> {
   if (!prompt.trim()) throw new Error('give me a prompt to queue');
+  if (providerOf(opts.provider) === 'codex') return cmdAddCodex(prompt, opts);
+  const { db, cfg } = await freshDb();
 
   const cwd = opts.cwd ? String(opts.cwd) : process.cwd();
   const safety = (opts.safety ?? cfg.defaultSafety) as Safety;
@@ -190,7 +289,7 @@ async function cmdShow(id: string): Promise<void> {
   const { db } = await freshDb();
   const job = getJob(db, id);
   if (!job) throw new Error(`no job ${id}`);
-  console.log(`\n  ${job.id} — ${job.status}`);
+  console.log(`\n  ${job.id} — ${job.status}${job.provider === 'codex' ? ' (Codex)' : ''}`);
   console.log(`  ${job.cwd}${job.resumeSessionId ? ` (resuming ${job.resumeSessionId.slice(0, 8)})` : ''}`);
   console.log(`  estimated ${job.estimateP50 != null ? money(job.estimateP50) : '—'}, actual ${job.actualCredits != null ? money(job.actualCredits) : '—'}`);
   console.log(`\n  ${job.prompt}\n`);
@@ -202,9 +301,17 @@ async function cmdRun(id: string): Promise<void> {
   const { db, cfg } = await freshDb();
   const job = getJob(db, id);
   if (!job) throw new Error(`no job ${id}`);
+  // The same rule as the dashboard's "Run now": a job that has run is a record
+  // of that run, and one that is running belongs to whoever started it. The
+  // scheduler would decline either quietly; this says why.
+  if (!['queued', 'deferred', 'cancelled'].includes(job.status)) {
+    throw new Error(`job ${id} is ${job.status} — queue it again to run it once more`);
+  }
   const { Scheduler } = await import('./queue/scheduler.ts');
   const { createClaudeCodeProvider } = await import('./providers/claudeCode.ts');
-  const scheduler = new Scheduler(db, cfg, createClaudeCodeProvider(cfg));
+  const { createCodexProvider } = await import('./providers/codex.ts');
+  // The job names its agent; the scheduler picks the provider that matches.
+  const scheduler = new Scheduler(db, cfg, [createClaudeCodeProvider(cfg), createCodexProvider(cfg)]);
   console.log(`  running ${job.id}…`);
   await scheduler.run(job);
   const done = getJob(db, id)!;
@@ -266,9 +373,14 @@ async function cmdValue(): Promise<void> {
   console.log('');
 }
 
-async function cmdSessions(cwd: string): Promise<void> {
-  const cfg = loadConfig();
-  const sessions = await recentSessions(claudeDir(cfg), cwd);
+async function cmdSessions(cwd: string, provider: unknown): Promise<void> {
+  let sessions;
+  if (providerOf(provider) === 'codex') {
+    const { db, cfg } = await freshDb();
+    sessions = await codexSessions(db, codexHome(cfg), resolve(cwd));
+  } else {
+    sessions = await recentSessions(claudeDir(loadConfig()), cwd);
+  }
   if (!sessions.length) return console.log(`  No sessions found for ${cwd}`);
   console.log('');
   for (const s of sessions) {
@@ -339,7 +451,7 @@ async function main(): Promise<void> {
       cwd: { type: 'string' }, model: { type: 'string' }, safety: { type: 'string' },
       resume: { type: 'string' }, when: { type: 'string' }, priority: { type: 'string' },
       urgent: { type: 'boolean' }, all: { type: 'boolean' }, window: { type: 'string' },
-      refresh: { type: 'boolean' },
+      refresh: { type: 'boolean' }, provider: { type: 'string' },
       port: { type: 'string' }, host: { type: 'string' },
     },
   });
@@ -372,7 +484,7 @@ async function main(): Promise<void> {
       return;
     }
     case 'calibrate': return cmdCalibrate(String(positionals[0] ?? ''), String(values.window ?? 'block'));
-    case 'sessions': return cmdSessions(values.cwd ? String(values.cwd) : process.cwd());
+    case 'sessions': return cmdSessions(values.cwd ? String(values.cwd) : process.cwd(), values.provider);
     case 'config': {
       const cfg = loadConfig();
       saveConfig(cfg);

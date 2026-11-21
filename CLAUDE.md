@@ -100,3 +100,25 @@ The whole value is that the numbers are trustworthy, so:
 decided, what is done, what is deliberately still open. Read it before touching packaging,
 Windows paths, or anything about users who don't have the CLI. It is edited in place, not
 appended to: if you finish something there, move its status and write down what you learned.
+
+## Codex lives beside Claude, not inside it
+
+`src/codex/` meters OpenAI's Codex CLI. Its rows go in `codex_events`, `codex_limits` and
+`codex_files` — never in `events`, which feeds Claude's window, cap, burn rate and payback. Count
+only top-level `token_usage_record` lines, one row per `response_id`; the `turn_token_usage` and
+`thread_token_usage` beside them are running totals. A record carries no model: take it from the
+`turn_context` with the same `turn_id`.
+
+The rings are OpenAI's percentages or nothing. There is no cap to estimate a Codex window
+against, so a reading past its reset is shown as no reading, never as 0%. `npm test` reaches
+Codex only through `test/fake-codex.mjs` (`exec` and `app-server`), for the same reason it
+reaches Claude only through `fake-claude.mjs`: the real `app-server` read goes out under
+someone's login.
+
+`src/codex/prices.ts` is a hand copy of OpenAI's API pages: each row names its page and the day it
+was read, and a model's first row has `from: null` because no page says since when. A price change
+is a new row with its own `from` date; a correction is a fixed row. Either one re-prices what is
+stored, because the stamp is a hash of the rows, so bump `OPENAI_PRICING_VERSION` only when
+`codexCredits` itself changes. Only a response that ran at service tier `default` is priced, and a
+priced total is a floor; the interface says both. None of it touches Claude's `PRICING_VERSION`,
+which clears calibration anchors when it moves.
